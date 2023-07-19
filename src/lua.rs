@@ -11,7 +11,7 @@
 #![allow(clippy::unnecessary_wraps, clippy::needless_pass_by_value)]
 use parking_lot::Mutex;
 use rlua::Lua;
-use std::{fmt::Write, sync::Arc};
+use std::sync::Arc;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use rlua::{Context, ExternalError, Result};
@@ -120,7 +120,7 @@ pub(crate) fn run(rpmparser: &Arc<Mutex<SpecParser>>, script: &str) -> Result<St
 		globals.set(
 			"print",
 			ctx.create_function(move |_, s: String| {
-				anda_out.lock().write_str(&s).map_err(rlua::ExternalError::to_lua_err)?;
+				anda_out.lock().push_str(&s);
 				Ok(())
 			})?,
 		)?;

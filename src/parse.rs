@@ -5,6 +5,7 @@ use color_eyre::{
 	eyre::{eyre, Context},
 	Help, Result, SectionExt,
 };
+use lazy_format::lazy_format as lzf;
 use parking_lot::Mutex;
 use regex::Regex;
 use smartstring::alias::String;
@@ -18,10 +19,10 @@ use std::{
 };
 use tracing::{debug, error, trace, warn};
 
-const PKGNAMECHARSET: &str = "_-";
+const PKGNAMECHARSET: &str = "_-().";
 
 lazy_static::lazy_static! {
-	static ref RE_PKGQCOND: Regex = Regex::new(r"\s+(>=?|<=?|=)\s+(\d+:)?([\w\d.^~]+)-([\w\d.^~]+)(.*)").unwrap();
+	static ref RE_PKGQCOND: Regex = Regex::new(r"(>=?|<=?|=)\s+(\d+:)?([\w\d.^]+)(-([\w\d.^]+))?(.*)").unwrap();
 	static ref RE_REQ1: Regex = Regex::new(r"(?m)^Requires(?:\(([\w,\s]+)\))?:\s*(.+)$").unwrap();
 	static ref RE_REQ2: Regex = Regex::new(r"(?m)([\w-]+)(?:\s*([>=<]{1,2})\s*([\d._~^]+))?").unwrap();
 	static ref RE_FILE: Regex = Regex::new(r"(?m)^(%\w+(\(.+\))?\s+)?(.+)$").unwrap();
@@ -110,27 +111,47 @@ impl Package {
 	/// use rpmspec_rs::parse::Package;
 	///
 	/// let mut pkgs = vec![];
-	/// Package::add_simple_query(&mut pkgs, "anda subatomic, mock")?;
+	/// Package::add_simple_query(&mut pkgs, "anda, subatomic rpm_macro(fdupes) pkgconfig(gio-2.0)".into())?;
+	/// assert_eq!(
+	///   pkgs,
+	///   vec![
+	///     Package::new("anda".into()),
+	///     Package::new("subatomic".into()),
+	///     Package::new("rpm_macro(fdupes)".into()),
+	///     Package::new("pkgconfig(gio-2.0)".into()),
+	///   ]
+	/// );
 	/// # Ok::<(), color_eyre::Report>(())
 	/// ```
 	///
 	/// # Errors
 	/// An error is returned if and only if there exists an invalid character that is
-	/// not alphanumeric, a space, a comma, a dash and an underscore.
+	/// not ascii-alphanumeric and not in [`PKGNAMECHARSET`].
 	pub fn add_simple_query(pkgs: &mut Vec<Self>, query: &str) -> Result<()> {
-		let query = query.trim();
 		let mut last = String::new();
-		for ch in query.chars() {
+		let mut quotes = String::new();
+		let mut chrs = query.trim().chars();
+		while let Some(ch) = chrs.next() {
 			if ch == ' ' || ch == ',' {
+				if !quotes.is_empty() {
+					return Err(eyre!("Unclosed quotes: `{quotes}`").note(format!("Reading query `{query}`")).note(lzf!("Parsing `{last}`")).note(lzf!("Deliminator `{ch}`")));
+				}
 				if !last.is_empty() {
 					pkgs.push(Self::new(std::mem::take(&mut last)));
 				}
 				continue;
 			}
-			if !(ch.is_alphanumeric() || PKGNAMECHARSET.contains(ch)) {
-				return Err(eyre!("Invalid character `{ch}` found in package query.").note(format!("query: `{query}`")));
+			if !ch.is_ascii_alphanumeric() && !PKGNAMECHARSET.contains(ch) {
+				return Err(eyre!("Invalid character `{ch}` in package name")
+					.note(format!("Reading query `{query}`"))
+					.note(lzf!("Parsing `{last}`"))
+					.suggestion(lzf!("Only ascii alphanumeric characters and `{PKGNAMECHARSET}` are valid")));
 			}
+			textproc::chk_ps(&mut quotes, ch)?;
 			last.push(ch);
+		}
+		if !quotes.is_empty() {
+			return Err(eyre!("Unclosed quotes: `{quotes}`").note(format!("Reading query `{query}`")).note(lzf!("Parsing `{last}`")).warning("Unexpected EOL"));
 		}
 		if !last.is_empty() {
 			pkgs.push(Self::new(last));
@@ -145,8 +166,8 @@ impl Package {
 	///
 	/// # Errors
 	/// An error is returned if and only if
-	/// - there exists an invalid character in package names that is not alphanumeric, a space, a
-	///   comma, a dash and an underscore; or
+	/// - there exists an invalid character in package names that is not ascii alphanumeric, a space, a
+	///   comma, and nott in [`PKGNAMECHARSET`]; or
 	/// - an epoch specified cannot be parsed by `core::str::parse::<u32>()`.
 	///
 	/// # Panics
@@ -159,23 +180,76 @@ impl Package {
 	///
 	/// # Caveats
 	/// This function is recursive, but it should be safe.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// use rpmspec_rs::parse::{Package, PkgQCond};
+	///
+	/// let mut pkgs = vec![];
+	/// let query = "hai, bai >= 3.0 another-pkg".into();
+	/// Package::add_query(&mut pkgs, query)?;
+	///
+	/// let hai = Package::new("hai".into());
+	/// let bai = Package { name: "bai".into(), version: Some("3.0".into()), condition: PkgQCond::Ge, ..Default::default() };
+	/// let another = Package::new("another-pkg".into());
+	/// assert_eq!(pkgs, vec![hai, bai, another]);
+	/// # Ok::<(), color_eyre::Report>(())
+	/// ```
 	pub fn add_query(pkgs: &mut Vec<Self>, query: &str) -> Result<()> {
 		let query = query.trim(); // just in case
 		if query.is_empty() {
 			return Ok(());
 		}
-		let Some((name, rest)) = query.split_once(|c: char| !c.is_alphanumeric() && !PKGNAMECHARSET.contains(c)) else {
-			// check if query matches pkg name
-			if query.chars().any(|c| !c.is_alphanumeric() && !PKGNAMECHARSET.contains(c)) {
-				return Err(eyre!("Invalid package name `{query}`").suggestion("Use only alphanumerics, underscores and dashes."));
+		let mut spaced = false;
+		let mut comma = false;
+		let mut name = String::new();
+		let mut rest = String::new();
+		let mut chrs = query.chars();
+		while let Some(ch) = chrs.next() {
+			if ch == ' ' {
+				spaced = true;
+				continue;
 			}
-			pkgs.push(Self::new(query.into()));
-			return Ok(())
-		};
+			if ch == ',' {
+				comma = true;
+				rest = chrs.collect();
+				break;
+			}
+			if spaced {
+				rest = format!("{ch}{}", chrs.collect::<String>()).into();
+				break;
+			}
+			if !ch.is_ascii_alphanumeric() && !PKGNAMECHARSET.contains(ch) {
+				return Err(eyre!("Invalid character `{ch}` in package name")
+					.note(format!("Reading query `{query}`"))
+					.note(lzf!("Parsing `{name}`"))
+					.suggestion(lzf!("Only ascii alphanumeric characters and `{PKGNAMECHARSET}` are valid")));
+			}
+			name.push(ch);
+		}
+		if comma {
+			pkgs.push(Self::new(name).into());
+			let rest = rest.trim();
+			if rest.is_empty() {
+				warn!(query, "Trailing comma in package query");
+				return Ok(());
+			}
+			return Self::add_query(pkgs, rest);
+		}
+		if name.is_empty() {
+			// either a bug or trailing commas
+			warn!(query, "Parsed package query and found empty name. Check if there are trailing commas.");
+			return Ok(());
+		}
 		// the part that matches the good name is `name`. Check the rest.
 		let mut pkg = Self::new(name.into());
-		let Some(caps) = RE_PKGQCOND.captures(rest) else {
-			return Self::add_query(pkgs, rest.trim_start_matches(|c| " ,".contains(c)));
+		let Some(caps) = RE_PKGQCOND.captures(&rest) else {
+			pkgs.push(pkg);
+			if rest.is_empty() {
+				return Ok(());
+			}
+			return Self::add_query(pkgs, &rest);
 		};
 		pkg.condition = caps[1].into();
 		if let Some(epoch) = caps.get(2) {
@@ -183,10 +257,21 @@ impl Package {
 			pkg.epoch = Some(epoch.parse().map_err(|e| eyre!("Cannot parse epoch to u32: `{epoch}`").error(e).suggestion("Epoch can only be positive integers"))?);
 		}
 		pkg.version = Some(caps[3].into());
-		pkg.release = Some(caps[4].into());
+		if let Some(rel) = caps.get(5) {
+			pkg.release = Some(rel.as_str().into());
+		}
 		pkgs.push(pkg);
-		if let Some(rest) = caps.get(5) {
-			return Self::add_query(pkgs, rest.as_str().trim_start_matches(|c| " ,".contains(c)));
+		if let Some(rest) = caps.get(6) {
+			let mut chrs = rest.as_str().chars();
+			while let Some(ch) = chrs.next() {
+				if ch == ' ' {
+					continue;
+				}
+				if ch == ',' {
+					return Self::add_query(pkgs, chrs.collect::<String>().trim_start());
+				}
+				return Self::add_query(pkgs, &format!("{ch}{}", chrs.collect::<String>()));
+			}
 		}
 		Ok(())
 	}
@@ -716,7 +801,7 @@ pub struct RPMSpec {
 	/// Represents `Release:`
 	pub release: Option<String>,
 	/// Represents `Epoch:`
-	pub epoch: Option<i32>,
+	pub epoch: u32,
 	/// Repreesnts `License:`
 	pub license: Option<String>,
 	/// Repreesnts `SourceLicense:`
@@ -729,8 +814,8 @@ pub struct RPMSpec {
 	pub sources: HashMap<u32, String>,
 	/// Repreesnts `Patch0:`, `Patch1:`, ...
 	pub patches: HashMap<u32, String>,
-	// TODO icon
-	// TODO nosource nopatch
+	// TODO: icon
+	// TODO: nosource nopatch
 	/// Represents `URL:`
 	pub url: Option<String>,
 	/// Represents `BugURL:`
@@ -747,7 +832,7 @@ pub struct RPMSpec {
 	pub vendor: Option<String>,
 	/// Represents `Packager:`
 	pub packager: Option<String>,
-	// TODO buildroot
+	// TODO: buildroot
 	/// Represents `AutoReqProv:`
 	pub autoreqprov: bool,
 	/// Represents `AutoReq:`
@@ -897,7 +982,6 @@ impl SpecParser {
 		Ok(s[..s.len() - 1].into()) // remove new line
 	}
 
-	// todo rewrite
 	/// Loads all macros defined in a file.
 	///
 	/// # Errors
@@ -915,11 +999,11 @@ impl SpecParser {
 		let bytes = BufReader::new(std::fs::File::open(path)?).read_to_end(&mut buf)?;
 		debug_assert_ne!(bytes, 0, "Empty macro definition file '{}'", path.display());
 		for cap in RE.captures_iter(std::str::from_utf8(&buf)?) {
-			if let Some(val) = self.macros.get(&cap[1]) {
-				debug!("Macro Definition duplicated: {} : '{val:?}' | '{}'", &cap[1], &cap[2]);
-				continue; // FIXME?
-			}
 			let name = &cap[1];
+			if let Some(val) = self.macros.get(name) {
+				debug!("Macro Definition duplicated: {name} : '{val:?}' | '{}'", &cap[2]);
+				continue; // FIXME: properly handle duplication
+			}
 			if let Some(name) = name.strip_suffix("()") {
 				self.macros.insert(name.into(), format!("{} ", &cap[2]).into());
 			} else {
@@ -950,7 +1034,7 @@ impl SpecParser {
 		let binding = core::str::from_utf8(&binding.stdout)?;
 		let paths = binding.trim().split(':');
 
-		// TODO use Consumer::read_til_EOL() instead
+		// TODO: use Consumer::read_til_EOL() instead
 		for path in paths {
 			let path = path.replace("%{_target}", Self::arch()?.as_str());
 			debug!(": {path}");
@@ -1297,6 +1381,7 @@ impl SpecParser {
 						);
 						self.errors.push(ParserError::Duplicate(self.count_line, stringify!($x).into()));
 					}
+					self.macros.insert(stringify!($y).into(), value.clone());
 					rpm.$y = Some(value);
 					return Ok(());
 				}
@@ -1361,12 +1446,7 @@ impl SpecParser {
 		opt!(%BuildArchitectures buildarch);
 
 		match name {
-			"Epoch" => {
-				if let Some(old) = rpm.epoch {
-					warn!("Overriding existing Epoch preamble value `{old}` to `{value}`");
-				}
-				rpm.epoch = Some(value.parse().expect("Failed to decode epoch to int"));
-			}
+			"Epoch" => rpm.epoch = value.parse().map_err(|e: ParseIntError| eyre!(e).wrap_err("Failed to decode epoch to int"))?,
 			"Provides" => Package::add_query(&mut rpm.provides, &value)?,
 			"Conflicts" => Package::add_query(&mut rpm.conflicts, &value)?,
 			"Obsoletes" => Package::add_query(&mut rpm.obsoletes, &value)?,
@@ -1749,7 +1829,7 @@ impl SpecParser {
 	}
 
 	/// parse the stuff after %, and determines `{[()]}`. returns expanded macro.
-	/// FIXME please REFACTOR me!!
+	/// FIXME: please REFACTOR me!!
 	pub(crate) fn _use_raw_macro(&mut self, chars: &mut Consumer) -> Result<String> {
 		debug!("reading macro");
 		let (mut notflag, mut question, mut first) = (false, false, true);
@@ -1809,7 +1889,6 @@ impl SpecParser {
 					}
 					return Self::__rawm_shellexpand(chars, &mut quotes);
 				}
-				// '[' => todo!("what does %[] mean? www"),
 				_ if !(ch.is_ascii_alphanumeric() || ch == '_') => {
 					textproc::back(chars, &mut quotes, ch)?;
 					break;
@@ -1920,5 +1999,19 @@ mod tests {
 		let mut p = super::SpecParser::new();
 		p.macros.insert("hai".into(), "hai, %1! ".into());
 		assert_eq!(p.parse_macro(&mut "%hai madomado".into()).collect::<String>(), String::from("hai, madomado!"));
+	}
+	#[test]
+	fn bad_macro() {
+		let mut p = super::SpecParser::new();
+		assert_eq!(p.parse_macro(&mut "%hai %{bai} %!?some %{!?what}".into()).collect::<String>(), String::from("%hai %{bai} %!?some %{!?what}"))
+	}
+	#[test]
+	fn simple_query() {
+		let mut pkgs = vec![];
+		Package::add_simple_query(&mut pkgs, "hai, bai some(stuff-1.0)".into()).unwrap();
+		assert_eq!(pkgs, vec![Package::new("hai".into()), Package::new("bai".into()), Package::new("some(stuff-1.0)".into())]);
+		let _ = Package::add_simple_query(&mut pkgs, "bad!").unwrap_err();
+		let _ = Package::add_simple_query(&mut pkgs, "also(bad").unwrap_err();
+		let _ = Package::add_simple_query(&mut pkgs, "not-good >= 1.0").unwrap_err();
 	}
 }

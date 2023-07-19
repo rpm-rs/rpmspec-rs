@@ -14,6 +14,7 @@ use tracing::error;
 #[rustfmt::skip] // kamo https://github.com/rust-lang/rustfmt/issues/4609
 macro_rules! gen_read_helper {
 	($reader:ident $quotes:ident) => {
+		#[allow(unused_macros)]
 		macro_rules! exit_chk {
 			() => {
 				if !$quotes.is_empty() {
@@ -32,7 +33,7 @@ macro_rules! gen_read_helper {
 					textproc::chk_ps(&mut $quotes, ch);
 					ch
 				} else {
-					back!($c);
+					textproc::back($reader, $quotes, $c);
 					exit!();
 				}
 			};

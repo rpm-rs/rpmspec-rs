@@ -2,6 +2,11 @@
 name = "rpmspec-rs"
 description = "An RPM spec file parser"
 version = "0.1.0"
+authors = ["Fyra Labs <contact@fyralabs.com>"]
+readme = "README.md"
+repository = "https://github.com/rpm-rs/rpmspec-rs"
+keywords = ["rpmspec", "rpm", "packaging"]
+categories = ["parser-implementations", "parsing"]
 edition = "2021"
 license = "MIT"
 
