@@ -19,3 +19,4 @@ pub mod parse;
 #[macro_use]
 mod util;
 pub mod lua;
+mod macros;

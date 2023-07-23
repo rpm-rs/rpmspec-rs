@@ -1,5 +1,6 @@
 //! Parser for rpmspec. See [`SpecParser`].
 use crate::error::ParserError;
+use crate::macros::MacroType;
 use crate::util::{gen_read_helper, textproc, Consumer, SpecMacroParserIter};
 use color_eyre::{
 	eyre::{eyre, Context},
@@ -15,6 +16,7 @@ use std::{
 	mem::take,
 	num::ParseIntError,
 	process::Command,
+	str::FromStr,
 	sync::Arc,
 };
 use tracing::{debug, error, trace, warn};
@@ -22,14 +24,12 @@ use tracing::{debug, error, trace, warn};
 const PKGNAMECHARSET: &str = "_-().";
 
 lazy_static::lazy_static! {
-	static ref RE_PKGQCOND: Regex = Regex::new(r"(>=?|<=?|=)\s+(\d+:)?([\w\d.^]+)(-([\w\d.^]+))?(.*)").unwrap();
-	static ref RE_REQ1: Regex = Regex::new(r"(?m)^Requires(?:\(([\w,\s]+)\))?:\s*(.+)$").unwrap();
-	static ref RE_REQ2: Regex = Regex::new(r"(?m)([\w-]+)(?:\s*([>=<]{1,2})\s*([\d._~^]+))?").unwrap();
-	static ref RE_FILE: Regex = Regex::new(r"(?m)^(%\w+(\(.+\))?\s+)?(.+)$").unwrap();
-	static ref RE_CHANGELOG: Regex = Regex::new(r"(?m)^\*[ \t]*((\w{3})[ \t]+(\w{3})[ \t]+(\d+)[ \t]+(\d+))[ \t]+(\S+)([ \t]+<([\w@.+]+)>)?([ \t]+-[ \t]+([\d.-^~_\w]+))?$((\n^[^*\n]*)+)").unwrap();
-	static ref RE_PREAMBLE: Regex = Regex::new(r"(\w+):\s*(.+)").unwrap();
-	static ref RE_DNL: Regex = Regex::new(r"^%dnl\b").unwrap();
-	static ref RE_DIGIT: Regex = Regex::new(r"\d+$").unwrap();
+	static ref RE_PQC:	Regex = Regex::new(r"(>=?|<=?|=)\s+(\d+:)?([\w\d.^]+)(-([\w\d.^]+))?(.*)").unwrap();
+	static ref RE_REQ:	Regex = Regex::new(r"(?m)^Requires(?:\(([\w,\s]+)\))?:\s*(.+)$").unwrap();
+	static ref RE_FILE:	Regex = Regex::new(r"(?m)^(%\w+(\(.+\))?\s+)?(.+)$").unwrap();
+	static ref RE_CLOG:	Regex = Regex::new(r"(?m)^\*[ \t]*((\w{3})[ \t]+(\w{3})[ \t]+(\d+)[ \t]+(\d+))[ \t]+(\S+)([ \t]+<([\w@.+]+)>)?([ \t]+-[ \t]+([\d.-^~_\w]+))?$((\n^[^*\n]*)+)").unwrap();
+	static ref RE_PMB:	Regex = Regex::new(r"(\w+):\s*(.+)").unwrap();
+	static ref RE_DNL:	Regex = Regex::new(r"%dnl\b").unwrap();
 }
 
 /// Conditional operators used in specifying dependencies.
@@ -54,16 +54,17 @@ pub enum PkgQCond {
 	Gt,
 }
 
-impl From<&str> for PkgQCond {
-	fn from(value: &str) -> Self {
-		match value {
+impl FromStr for PkgQCond {
+	type Err = ParserError;
+	fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+		Ok(match s {
 			"=" => Self::Eq,
 			">=" => Self::Ge,
 			">" => Self::Gt,
 			"<=" => Self::Le,
 			"<" => Self::Lt,
-			_ => unreachable!("Regex RE_PKGQCOND matched bad condition `{value}`"),
-		}
+			_ => return Err(ParserError::BadPkgQCond(s.into())),
+		})
 	}
 }
 
@@ -244,14 +245,14 @@ impl Package {
 		}
 		// the part that matches the good name is `name`. Check the rest.
 		let mut pkg = Self::new(name.into());
-		let Some(caps) = RE_PKGQCOND.captures(&rest) else {
+		let Some(caps) = RE_PQC.captures(&rest) else {
 			pkgs.push(pkg);
 			if rest.is_empty() {
 				return Ok(());
 			}
 			return Self::add_query(pkgs, &rest);
 		};
-		pkg.condition = caps[1].into();
+		pkg.condition = PkgQCond::from_str(&caps[1])?;
 		if let Some(epoch) = caps.get(2) {
 			let epoch = epoch.as_str().strip_suffix(':').expect("epoch no `:` by RE_PKGQCOND");
 			pkg.epoch = Some(epoch.parse().map_err(|e| eyre!("Cannot parse epoch to u32: `{epoch}`").error(e).suggestion("Epoch can only be positive integers"))?);
@@ -692,7 +693,7 @@ impl Changelogs {
 	/// # Errors
 	/// - [`chrono::ParseError`] if any dates cannot be parsed.
 	pub fn parse(&mut self) -> Result<()> {
-		self.changelogs = RE_CHANGELOG
+		self.changelogs = RE_CLOG
 			.captures_iter(&self.raw)
 			.map(|cap| {
 				Ok(Changelog {
@@ -924,7 +925,7 @@ pub struct SpecParser {
 	pub rpm: RPMSpec,
 	errors: Vec<ParserError>,
 	/// Macros present in the spec file union the system macros
-	pub macros: HashMap<String, String>,
+	pub macros: HashMap<String, Vec<MacroType>>,
 	section: RPMSection,
 	cond: Vec<(bool, bool)>, // current, before
 
@@ -934,9 +935,21 @@ pub struct SpecParser {
 }
 
 impl SpecParser {
-	/// Returns an iterator that yields characters such that the macros in the input are parsed
-	pub fn parse_macro<'a>(&'a mut self, reader: &'a mut Consumer) -> SpecMacroParserIter {
-		SpecMacroParserIter { reader, parser: self, percent: false, buf: String::new() }
+	/// Parse all macros (including shell expansions) in `reader`.
+	pub fn parse_macro(&mut self, out: &mut String, reader: &mut Consumer) -> Result<()> {
+		while let Some(ch) = reader.next() {
+			if ch != '%' {
+				out.push(ch);
+				continue;
+			}
+			if reader.next().map_or(true, |n| n == '%') {
+				out.push('%');
+				continue;
+			}
+			reader.back();
+			self._use_raw_macro(out, reader)?;
+		}
+		Ok(())
 	}
 
 	/// Parse the `Requires:` or `Requires(...):` preambles.
@@ -944,7 +957,7 @@ impl SpecParser {
 	/// # Errors
 	/// - only if the dependency specified is invalid ([`Package::add_query`])
 	pub fn parse_requires(&mut self, sline: &str) -> Result<bool> {
-		let Some(caps) = RE_REQ1.captures(sline) else {
+		let Some(caps) = RE_REQ.captures(sline) else {
 			return Ok(false);
 		};
 		let mut pkgs = vec![];
@@ -994,22 +1007,20 @@ impl SpecParser {
 		lazy_static::lazy_static! {
 			static ref RE: Regex = Regex::new(r"(?m)^%([\w()]+)[\t ]+((\\\n|[^\n])+)$").unwrap();
 		}
+		let file = Arc::from(path);
 		debug!("Loading macros from {}", path.display());
 		let mut buf = vec![];
 		let bytes = BufReader::new(std::fs::File::open(path)?).read_to_end(&mut buf)?;
 		debug_assert_ne!(bytes, 0, "Empty macro definition file '{}'", path.display());
 		for cap in RE.captures_iter(std::str::from_utf8(&buf)?) {
 			let name = &cap[1];
-			if let Some(val) = self.macros.get(name) {
-				debug!("Macro Definition duplicated: {name} : '{val:?}' | '{}'", &cap[2]);
-				continue; // FIXME: properly handle duplication
+			let m = MacroType::Runtime { file, offset: 0, def: Box::from(&cap[2]), param: name.ends_with("()") };
+			if let Some(v) = self.macros.get_mut(name) {
+				v.push(m);
+				continue;
 			}
-			if let Some(name) = name.strip_suffix("()") {
-				self.macros.insert(name.into(), format!("{} ", &cap[2]).into());
-			} else {
-				// we trim() just in case
-				self.macros.insert(cap[1].into(), cap[2].trim().into());
-			}
+			self.macros.insert(name.into(), vec![m]);
+			continue;
 		}
 		Ok(())
 	}
@@ -1179,7 +1190,8 @@ impl SpecParser {
 									return Err(eyre!("Expected argument for %files after `-f`, found flag `{next}`"));
 								}
 								if let Some(old) = f {
-									return Err(eyre!("Unexpected duplicated `-f`").note(format!("Old: {old}")).note(format!("New: {next}")));
+									let old = Box::leak(Box::new(old));
+									return Err(eyre!("Unexpected duplicated `-f`").note(lzf!("Old: {old}")).note(format!("New: {next}")));
 								}
 								f = Some(next.into());
 							}
@@ -1191,7 +1203,8 @@ impl SpecParser {
 									return Err(eyre!("Expected argument for %files after `-n`, found flag `{next}`"));
 								}
 								if !name.is_empty() {
-									return Err(eyre!("The name of the subpackage is already set.").note(format!("Old: {name}")).note(format!("New: {next}")));
+									let name = Box::leak(Box::new(name));
+									return Err(eyre!("The name of the subpackage is already set.").note(lzf!("Old: {name}")).note(format!("New: {next}")));
 								}
 								name = next.into();
 							}
@@ -1199,6 +1212,7 @@ impl SpecParser {
 						}
 					} else {
 						if !name.is_empty() {
+							let name = Box::leak(Box::new(name));
 							return Err(eyre!("The name of the subpackage is already set.").note(format!("Old: {name}")).note(format!("New: {remain}")));
 						}
 						name = format!("{}-{remain}", self.rpm.name.as_ref().ok_or(eyre!("Expected package name before subpackage `{remain}`"))?).into();
@@ -1224,11 +1238,14 @@ impl SpecParser {
 	/// # Panic
 	/// - The function expects a subpackage to be previously defined and created in
 	///   `self.rpm.packages` and would panic if it was not found. This'd be a bug.
-	pub fn parse<R: std::io::Read>(&mut self, bufread: BufReader<R>) -> Result<()> {
-		let mut consumer = Consumer::new("", Some(bufread));
-		while let Some(line) = consumer.read_til_eol() {
-			let raw_line = self._expand_macro(&mut Consumer::from(&*line))?;
-			let line = raw_line.trim();
+	pub fn parse<R: std::io::Read>(&mut self, bufread: BufReader<R>, path: Arc<std::path::Path>) -> Result<()> {
+		let mut consumer = Consumer::new("".into(), Some(bufread.into()), path);
+		let last_pos = consumer.pos;
+		while let Some(rawline) = consumer.read_til_eol() {
+			let mut line ;
+			// unwrap: should be safe because we read it already from `rawline`
+			self.parse_macro(&mut line, consumer.range(last_pos..last_pos + rawline.len()).unwrap())?;
+			let line = line.trim();
 			if line.is_empty() || line.starts_with('#') || RE_DNL.is_match(line) {
 				continue;
 			}
@@ -1246,21 +1263,20 @@ impl SpecParser {
 			}
 			match self.section {
 				RPMSection::Global | RPMSection::Package(_) => {
-					let Some(cap) = RE_PREAMBLE.captures(line) else {
+					let Some(cap) = RE_PMB.captures(line) else {
 						self.errors.push(ParserError::Others(eyre!("{}: Non-empty non-preamble line: {line}", self.count_line)));
 						continue;
 					};
 					// check for list_preambles
-					let Some(digitcap) = RE_DIGIT.captures(&cap[1]) else {
+					let Some(strdigit) = &cap[1].strip_suffix(|n: char| n.is_numeric()) else {
 						self.add_preamble(&cap[1], cap[2].into())?;
 						continue;
 					};
-					let strdigit = &digitcap[0];
 					let digit = strdigit.parse()?;
 					let name = &cap[1][..cap[1].len() - strdigit.len()];
 					self.add_list_preamble(name, digit, &cap[2])?;
 				}
-				RPMSection::Description(ref p) => {
+				RPMSection::Description(ref mut p) => {
 					if p.is_empty() {
 						self.rpm.description.push_str(line);
 						self.rpm.description.push('\n');
@@ -1282,7 +1298,7 @@ impl SpecParser {
 					self.rpm.install.push_str(line);
 					self.rpm.install.push('\n');
 				}
-				RPMSection::Files(ref p, ref mut f) => {
+				RPMSection::Files(ref mut p, ref mut f) => {
 					if let Some(f) = f {
 						if p.is_empty() && self.rpm.files.incl.is_empty() {
 							self.rpm.files.incl = take(f);
@@ -1380,6 +1396,9 @@ impl SpecParser {
 							stringify!($x)
 						);
 						self.errors.push(ParserError::Duplicate(self.count_line, stringify!($x).into()));
+					}
+					if let Some(v) = self.macros.get_mut(stringify!($y).into()) {
+						v.push(MacroType::Runtime {def: value, })
 					}
 					self.macros.insert(stringify!($y).into(), value.clone());
 					rpm.$y = Some(value);
@@ -1494,7 +1513,7 @@ impl SpecParser {
 				self.load_macro_from_file(&std::path::PathBuf::from(&*reader.collect::<String>())).ok()?;
 				Some("".into())
 			}
-			"expand" => self._expand_macro(reader).ok(),
+			"expand" => self.parse_macro(reader).ok(),
 			"expr" => unimplemented!(),
 			"lua" => {
 				let content: String = reader.collect();
@@ -1583,7 +1602,7 @@ impl SpecParser {
 					content.push('%');
 					continue;
 				}
-				reader.push(ch);
+				reader.back(ch);
 				content.push_str(&self._use_raw_macro(reader)?);
 				continue;
 			}
@@ -1596,7 +1615,7 @@ impl SpecParser {
 				if !"\\ \n".contains(next) {
 					return Err(eyre!("Found character `{next}` after `-{ch}` in parameterized macro"));
 				}
-				reader.push(next);
+				reader.back(next);
 				flags.push(ch);
 				content.push('-');
 				content.push(ch);
@@ -1611,7 +1630,7 @@ impl SpecParser {
 						got_newline = true;
 					} else if !ch.is_whitespace() {
 						if got_newline {
-							reader.push(ch);
+							reader.back(ch);
 							continue 'main;
 						}
 						return Err(eyre!("Got `{ch}` after `\\` before new line"));
@@ -1637,7 +1656,7 @@ impl SpecParser {
 		if follow == '*' {
 			res.push_str(raw_args); // %**
 		} else {
-			def.push(follow);
+			def.back(follow);
 			res.push_str(&args.join(" ")); // %*
 		}
 	}
@@ -1739,7 +1758,7 @@ impl SpecParser {
 					// no need chk_ps!(), must be numeric
 					while let Some(ch) = def.next() {
 						if !ch.is_numeric() {
-							def.push(ch);
+							def.back(ch);
 							break;
 						}
 						macroname.push(ch);
@@ -1753,37 +1772,12 @@ impl SpecParser {
 					);
 				}
 				_ => {
-					def.push(ch);
+					def.back(ch);
 					res.push_str(&self._use_raw_macro(def)?);
 				}
 			}
 		}
 		exit_chk!();
-		Ok(res)
-	}
-
-	fn _expand_macro(&mut self, chars: &mut Consumer) -> Result<String> {
-		let mut res = String::new();
-		while let Some(ch) = chars.next() {
-			self.count_chard += 1;
-			self.count_col += 1;
-			if ch == '\n' {
-				self.count_line += 1;
-				self.count_col = 0;
-			}
-			if ch == '%' {
-				if let Some(ch) = chars.next() {
-					if ch == '%' {
-						res.push('%');
-						continue;
-					}
-					chars.push(ch);
-					res.push_str(&self._use_raw_macro(chars).wrap_err_with(|| format!("Cannot parse macro ({}:{})", self.count_line, self.count_col))?);
-					continue;
-				}
-			}
-			res.push(ch);
-		}
 		Ok(res)
 	}
 
@@ -1797,10 +1791,10 @@ impl SpecParser {
 			if let Some(def) = def.strip_suffix(' ') {
 				// parameterized macro
 				let out = self._param_macro(name, &mut Consumer::from(def), reader)?;
-				self._expand_macro(&mut Consumer::from(&*out))
+				self.parse_macro(&mut Consumer::from(&*out))
 			} else {
 				// it's just text
-				self._expand_macro(&mut Consumer::from(def.as_str()))
+				self.parse_macro(&mut Consumer::from(def.as_str()))
 			}
 		} else {
 			Err(eyre!("Macro not found: {name}"))
@@ -1830,7 +1824,7 @@ impl SpecParser {
 
 	/// parse the stuff after %, and determines `{[()]}`. returns expanded macro.
 	/// FIXME: please REFACTOR me!!
-	pub(crate) fn _use_raw_macro(&mut self, chars: &mut Consumer) -> Result<String> {
+	pub(crate) fn _use_raw_macro<R: Read>(&mut self, out: &mut String, chars: &mut Consumer<R>) -> Result<()> {
 		debug!("reading macro");
 		let (mut notflag, mut question, mut first) = (false, false, true);
 		let (mut content, mut quotes) = (String::new(), String::new());
@@ -1852,10 +1846,10 @@ impl SpecParser {
 						textproc::chk_ps(&mut quotes, ch)?;
 						if quotes.len() == req_ql {
 							exit_chk!();
-							if question && notflag {
-								return Ok("".into());
+							if !(question && notflag) {
+								textproc::macro_expand_notflagproc(self, notflag, chars, &content, &name, out);
 							}
-							return Ok(textproc::macro_expand_notflagproc(self, notflag, chars, &content, &name));
+							return Ok(());
 						}
 						if ch == ':' {
 							let mut content = String::new();
@@ -1864,7 +1858,10 @@ impl SpecParser {
 								if quotes.len() == req_ql {
 									exit_chk!();
 									if question {
-										return Ok(if self.macros.contains_key(&name) ^ notflag { self.parse_macro(&mut (&*content).into()).collect() } else { "".into() });
+										if self.macros.contains_key(&name) ^ notflag {
+											self.parse_macro(&mut (&*content).into()).for_each(|ch| out.push(ch));
+										}
+										return Ok(());
 									}
 									return Ok(textproc::macro_expand_notflagproc(self, notflag, &mut (&*content).into(), &content, &name));
 								}

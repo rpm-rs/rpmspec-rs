@@ -1,6 +1,5 @@
-use crate::parse::SpecParser;
 use smartstring::alias::String;
-use std::io::Read;
+use std::{ops::Index, path::Path, sync::Arc, io::Read};
 use tracing::error;
 
 /// string operations / parsing with consumer
@@ -41,7 +40,7 @@ macro_rules! gen_read_helper {
 				if let Some(ch) = $reader.next() {
 					ch
 				} else {
-					$reader.push($c);
+					$reader.back();
 					exit!();
 				}
 			};
@@ -49,44 +48,29 @@ macro_rules! gen_read_helper {
 	};
 }
 
-/// A consumer that yields chars from a mutable String.
-/// It is a bit more efficient if characters need to be
-/// added into the String for the `.next()` iterations.
-/// # Implementation
-/// `Consumer` internally has `self.s` (String) storing
-/// the output of the `BufReader` temporarily. However,
-/// it is actually reversed. This is because operations
-/// like `pop()` and `push()` are faster (`O(1)`) while
-/// `remove(0)` and `insert(0, ?)` are slower (`O(n)`).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Consumer<R: std::io::Read = std::fs::File> {
-	s: String,
-	r: Option<std::io::BufReader<R>>,
-	pub l: usize,
-	pub c: usize,
-	pub b: usize,
-	lastc: usize,
+	pub s: Arc<str>,
+	pub r: Option<Arc<std::io::BufReader<R>>>,
+	pub file: Arc<Path>,
+	pub pos: usize,
 }
 
-impl<R: std::io::Read> Consumer<R> {
-	pub fn new(s: &str, r: Option<std::io::BufReader<R>>) -> Self {
-		Self { s: s.chars().rev().collect(), r, l: 0, c: 0, b: 0, lastc: 0 }
+impl<R: Read> Consumer<R> {
+	pub fn new(s: Arc<str>, r: Option<Arc<std::io::BufReader<R>>>, file: Arc<Path>) -> Self {
+		Self { s, r, pos: 0, file }
 	}
-	pub fn pos(&mut self, l: usize, c: usize, b: usize) {
-		self.l = l;
-		self.c = c;
-		self.b = b;
+	pub fn range(&mut self, r: std::ops::Range<usize>) -> Option<Consumer<R>> {
+		let cur = self.pos;
+		while self.pos >= r.end {
+			self.next()?;
+		}
+		self.pos = cur;
+		Some(Self { s: Arc::from(self.s.index(r)), r: None, file: self.file, pos: r.start })
 	}
 	#[inline]
-	pub fn push(&mut self, c: char) {
-		if c == '\n' {
-			self.l -= 1;
-			self.c = self.lastc;
-		} else {
-			self.c -= 1;
-		}
-		self.b -= 1;
-		self.s.push(c);
+	pub fn back(&mut self) {
+		self.pos -= 1;
 	}
 	pub fn read_til_eol(&mut self) -> Option<String> {
 		let mut ps = vec![];
@@ -158,93 +142,22 @@ impl<R: std::io::Read> Consumer<R> {
 	}
 }
 
-impl<R: std::io::Read> Iterator for Consumer<R> {
+impl<R: Read> Iterator for Consumer<R> {
 	type Item = char;
 
 	fn next(&mut self) -> Option<Self::Item> {
-		if let Some(c) = self.s.pop() {
-			if c == '\n' {
-				self.l += 1;
-				self.lastc = self.c;
-				self.c = 0;
-			} else {
-				self.c += 1;
-			}
-			self.b += 1;
+		if let Some(c) = self.s.chars().nth(self.pos) {
+			self.pos += 1;
 			return Some(c);
 		}
-		if let Some(ref mut r) = self.r {
-			let mut buf = [0; 64];
-			if r.read(&mut buf).ok()? == 0 {
-				None // EOF
-			} else {
-				self.s = match core::str::from_utf8(&buf) {
-					Ok(s) => s.chars().rev().collect(),
-					Err(e) => {
-						error!("cannot parse buffer `{buf:?}`: {e}");
-						return None;
-					}
-				};
-				let c = unsafe { self.s.pop().unwrap_unchecked() };
-				if c == '\n' {
-					self.l += 1;
-					self.lastc = self.c;
-					self.c = 0;
-				} else {
-					self.c += 1;
-				}
-				self.b += 1;
-				Some(c)
-			}
-		} else {
-			None
+		let mut buf: Vec<u8>;
+		if self.r?.read(&mut buf).ok()? == 0 {
+			return None; // EOF
 		}
-	}
-}
-
-impl<R: std::io::Read> From<&str> for Consumer<R> {
-	fn from(value: &str) -> Self {
-		Self { s: value.chars().rev().collect(), r: None, l: 0, c: 0, b: 0, lastc: 0 }
-	}
-}
-
-pub struct SpecMacroParserIter<'a> {
-	pub reader: &'a mut Consumer,
-	pub parser: &'a mut SpecParser,
-	pub percent: bool,
-	pub buf: String,
-}
-
-impl<'a> Iterator for SpecMacroParserIter<'a> {
-	type Item = char;
-	fn next(&mut self) -> Option<Self::Item> {
-		if !self.buf.is_empty() {
-			return self.buf.pop();
-		}
-		if let Some(ch) = self.reader.next() {
-			if ch == '%' {
-				self.percent = !self.percent;
-				if !self.percent {
-					return Some('%');
-				}
-				return self.next();
-			}
-			if self.percent {
-				self.reader.push(ch);
-				match self.parser._use_raw_macro(self.reader) {
-					Ok(s) => {
-						self.buf = s.chars().rev().collect();
-						return self.buf.pop();
-					}
-					Err(e) => {
-						error!("Fail to parse macro: {e:#?}");
-						return None;
-					}
-				}
-			}
-			return Some(ch);
-		}
-		None
+		self.s = Arc::from(core::str::from_utf8(&buf).map_err(|e| error!("cannot parse buffer `{buf:?}`: {e}")).ok()?);
+		let c = unsafe { self.s.chars().nth(self.pos).unwrap_unchecked() };
+		self.pos += 1;
+		return Some(c);
 	}
 }
 
@@ -310,7 +223,7 @@ pub mod textproc {
 			'{' if quotes.pop() != Some('{') => return Err(eyre!("BUG: pushing back `{{` failed quotes check")),
 			_ => {}
 		}
-		reader.push(ch);
+		reader.back();
 		Ok(())
 	}
 
@@ -333,14 +246,17 @@ pub mod textproc {
 	/// Expand macros depending on `notflag`.
 	///
 	/// when %a is undefined, %{!a} expands to %{!a}, but %!a expands to %a.
-	pub fn macro_expand_notflagproc(parser: &mut SpecParser, notflag: bool, reader: &mut Consumer, content: &str, name: &str) -> String {
-		let out = parser._rp_macro(name, reader);
+	pub fn macro_expand_notflagproc(parser: &mut SpecParser, notflag: bool, reader: &mut Consumer, content: &str, name: &str, out: &mut String) {
+		let res = parser._rp_macro(name, reader);
 		if notflag {
-			return out.unwrap_or_else(|e| {
-				debug!("_rp_macro: {e:#}");
-				if content.is_empty() { format!("%{name}") } else { format!("%{{!{name}}}") }.into()
-			});
+			if let Ok(s) = res {
+				out.push_str(&s);
+			}
+			return;
 		}
-		out.unwrap_or_default()
+		out.push_str(&res.unwrap_or_else(|e| {
+			debug!("_rp_macro: {e:#}");
+			if content.is_empty() { format!("%{name}") } else { format!("%{{!{name}}}") }.into()
+		}));
 	}
 }
