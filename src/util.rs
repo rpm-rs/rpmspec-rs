@@ -49,7 +49,7 @@ macro_rules! gen_read_helper {
 }
 
 #[derive(Debug, Clone)]
-pub struct Consumer<R: std::io::Read = std::fs::File> {
+pub struct Consumer<R: std::io::Read = stringreader::StringReader<'static>> {
 	pub s: Arc<str>,
 	pub r: Option<Arc<std::io::BufReader<R>>>,
 	pub file: Arc<Path>,
@@ -60,6 +60,7 @@ impl<R: Read> Consumer<R> {
 	pub fn new(s: Arc<str>, r: Option<Arc<std::io::BufReader<R>>>, file: Arc<Path>) -> Self {
 		Self { s, r, pos: 0, file }
 	}
+	#[must_use]
 	pub fn range(&mut self, r: std::ops::Range<usize>) -> Option<Consumer<R>> {
 		let cur = self.pos;
 		while self.pos >= r.end {
@@ -199,7 +200,7 @@ pub mod textproc {
 		Ok(())
 	}
 
-	pub fn back(reader: &mut Consumer, quotes: &mut String, ch: char) -> Result<()> {
+	pub fn back<R: std::io::Read>(reader: &mut Consumer<R>, quotes: &mut String, ch: char) -> Result<()> {
 		if ch == '\'' {
 			if quotes.ends_with('\'') {
 				quotes.pop();
@@ -246,17 +247,18 @@ pub mod textproc {
 	/// Expand macros depending on `notflag`.
 	///
 	/// when %a is undefined, %{!a} expands to %{!a}, but %!a expands to %a.
-	pub fn macro_expand_notflagproc(parser: &mut SpecParser, notflag: bool, reader: &mut Consumer, content: &str, name: &str, out: &mut String) {
-		let res = parser._rp_macro(name, reader);
+	pub fn macro_expand_notflagproc<R: std::io::Read>(parser: &mut SpecParser, notflag: bool, reader: &mut Consumer<R>, content: &str, name: &str, out: &mut String) {
+		let buf;
+		let res = parser._rp_macro(name, reader, buf);
 		if notflag {
-			if let Ok(s) = res {
-				out.push_str(&s);
+			if let Ok(()) = res {
+				out.push_str(&buf);
 			}
 			return;
 		}
-		out.push_str(&res.unwrap_or_else(|e| {
+		out.push_str(&res.map_or_else(|e| {
 			debug!("_rp_macro: {e:#}");
 			if content.is_empty() { format!("%{name}") } else { format!("%{{!{name}}}") }.into()
-		}));
+		}, |_| std::mem::take(buf)));
 	}
 }
