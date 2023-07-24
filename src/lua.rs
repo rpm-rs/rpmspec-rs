@@ -16,7 +16,7 @@ use std::sync::Arc;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use rlua::{Context, ExternalError, Result};
 
-use crate::parse::SpecParser;
+use crate::{macros::MacroType, parse::SpecParser};
 
 use repl::repl;
 
@@ -42,7 +42,7 @@ pub(crate) fn define(rpmparser: &Arc<Mutex<SpecParser>>, _: Context, arg: String
 			},
 		);
 		let mut p = rpmparser.lock();
-		p.macros.insert(name.into(), def.into());
+		p.macros.insert(name.into(), vec![(*def).into()]);
 		Ok(())
 	} else {
 		Err("Invalid syntax: `%define {def}`".to_lua_err())
@@ -53,7 +53,9 @@ pub(crate) fn execute(_: Context, args: Vec<String>) -> Result<i32> {
 }
 pub(crate) fn expand(rpmparser: &Arc<Mutex<SpecParser>>, _: Context, arg: &str) -> Result<String> {
 	let mut p = rpmparser.lock();
-	Ok(p.parse_macro(&mut arg.into()).collect::<String>())
+	let mut out: smartstring::alias::String = Default::default();
+	p.parse_macro(&mut out, &mut arg.into()).map_err(|e| e.to_lua_err())?;
+	Ok(out.to_string())
 }
 pub(crate) fn interactive(_: Context, _: String) -> Result<()> {
 	repl(); // lazy
@@ -62,7 +64,9 @@ pub(crate) fn interactive(_: Context, _: String) -> Result<()> {
 }
 pub(crate) fn isdefined(rpmparser: &Arc<Mutex<SpecParser>>, _: Context, name: &str) -> Result<(bool, bool)> {
 	if let Some(def) = rpmparser.lock().macros.get(name) {
-		return Ok((true, def.ends_with(' ')));
+		if let Some(MacroType::Runtime { param, .. }) = def.last() {
+			return Ok((true, *param));
+		}
 	}
 	Ok((false, false))
 }

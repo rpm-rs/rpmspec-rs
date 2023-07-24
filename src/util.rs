@@ -1,6 +1,7 @@
 use smartstring::alias::String;
-use std::{io::Read, ops::Index, path::Path, sync::Arc};
+use std::{io::{Read, BufReader}, ops::Index, path::Path, sync::Arc};
 use tracing::error;
+use parking_lot::Mutex;
 
 /// string operations / parsing with consumer
 ///
@@ -49,15 +50,21 @@ macro_rules! gen_read_helper {
 }
 
 #[derive(Debug, Clone)]
-pub struct Consumer<R: std::io::Read = stringreader::StringReader<'static>> {
+pub struct Consumer<R: Read + ?Sized = stringreader::StringReader<'static>> {
 	pub s: Arc<str>,
-	pub r: Option<Arc<std::io::BufReader<R>>>,
+	pub r: Option<Arc<Mutex<BufReader<Box<R>>>>>,
 	pub file: Arc<Path>,
 	pub pos: usize,
 }
 
-impl<R: Read> Consumer<R> {
-	pub fn new(s: Arc<str>, r: Option<Arc<std::io::BufReader<R>>>, file: Arc<Path>) -> Self {
+impl Default for Consumer {
+	fn default() -> Self {
+		Self { s: Arc::from(""), r: None, file: Arc::from(Path::new("")), pos: 0 }
+	}
+}
+
+impl<R: Read + ?Sized> Consumer<R> {
+	pub fn new(s: Arc<str>, r: Option<Arc<Mutex<BufReader<Box<R>>>>>, file: Arc<Path>) -> Self {
 		Self { s, r, pos: 0, file }
 	}
 	#[must_use]
@@ -67,7 +74,7 @@ impl<R: Read> Consumer<R> {
 			self.next()?;
 		}
 		self.pos = cur;
-		Some(Self { s: Arc::from(self.s.index(r)), r: None, file: self.file, pos: r.start })
+		Some(Self { s: Arc::from(self.s.index(r)), r: None, file: Arc::clone(&self.file), pos: 0 })
 	}
 	#[inline]
 	pub fn back(&mut self) {
@@ -143,7 +150,7 @@ impl<R: Read> Consumer<R> {
 	}
 }
 
-impl<R: Read> Iterator for Consumer<R> {
+impl<R: ?Sized + Read> Iterator for Consumer<R> {
 	type Item = char;
 
 	fn next(&mut self) -> Option<Self::Item> {
@@ -151,8 +158,8 @@ impl<R: Read> Iterator for Consumer<R> {
 			self.pos += 1;
 			return Some(c);
 		}
-		let mut buf: Vec<u8>;
-		if self.r?.read(&mut buf).ok()? == 0 {
+		let mut buf: Vec<u8> = vec![];
+		if self.r.as_mut()?.lock().read(&mut buf).ok()? == 0 {
 			return None; // EOF
 		}
 		self.s = Arc::from(core::str::from_utf8(&buf).map_err(|e| error!("cannot parse buffer `{buf:?}`: {e}")).ok()?);
@@ -164,7 +171,7 @@ impl<R: Read> Iterator for Consumer<R> {
 
 impl From<&str> for Consumer {
 	fn from(s: &str) -> Self {
-		Consumer::new(Arc::from(s), None, Arc::from(Path::new("<unknown>")))
+		Consumer::new(Arc::from(s), None, Arc::from(Path::new("<?>")))
 	}
 }
 
@@ -254,8 +261,8 @@ pub mod textproc {
 	///
 	/// when %a is undefined, %{!a} expands to %{!a}, but %!a expands to %a.
 	pub fn macro_expand_notflagproc<R: std::io::Read>(parser: &mut SpecParser, notflag: bool, reader: &mut Consumer<R>, content: &str, name: &str, out: &mut String) {
-		let buf;
-		let res = parser._rp_macro(name, reader, buf);
+		let mut buf = String::new();
+		let res = parser._rp_macro(name, reader, &mut buf);
 		if notflag {
 			if let Ok(()) = res {
 				out.push_str(&buf);
@@ -267,7 +274,7 @@ pub mod textproc {
 				debug!("_rp_macro: {e:#}");
 				if content.is_empty() { format!("%{name}") } else { format!("%{{!{name}}}") }.into()
 			},
-			|_| std::mem::take(buf),
+			|_| buf,
 		));
 	}
 }

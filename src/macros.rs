@@ -4,7 +4,7 @@ use std::{collections::HashMap, io::Read, path::Path, sync::Arc};
 
 #[derive(Clone)]
 pub enum MacroType {
-	Internal(fn(&mut SpecParser, &mut String, &mut Consumer<Box<dyn Read + '_>>) -> Result<(), ParserError>),
+	Internal(fn(&mut SpecParser, &mut String, &mut Consumer<dyn Read + '_>) -> Result<(), ParserError>),
 	Runtime { file: Arc<Path>, offset: usize, def: Box<str>, param: bool },
 }
 
@@ -24,17 +24,18 @@ impl From<&str> for MacroType {
 macro_rules! __internal_macros {
 	($(macro $m:ident($p:ident, $o:ident, $r:ident) $body:block )+) => {
 		$(
-			fn $m($p: &mut SpecParser, $o: &mut String, $r: &mut Consumer<Box<dyn Read + '_>>) -> Result<(), ParserError> $body
+			fn $m($p: &mut SpecParser, $o: &mut String, $r: &mut Consumer<dyn Read + '_>) -> Result<(), ParserError> $body
 		)+
-		pub const INTERNAL_MACROS: HashMap<String, Vec<MacroType>> = {
-			let mut ret = HashMap::new();
-			$({
-				let mut name = String::new();
-				name.push_str(stringify!($m));
-				ret.insert(name, vec![MacroType::Internal($m)]);
-			})+
-			ret
-		};
+		lazy_static::lazy_static! {
+
+			pub static ref INTERNAL_MACROS: HashMap<String, Vec<MacroType>> = {
+				let mut ret = HashMap::new();
+				$({
+					ret.insert(stringify!($m).into(), vec![MacroType::Internal($m)]);
+				})+
+				ret
+			};
+		}
 	};
 }
 

@@ -4,6 +4,7 @@ use crate::macros::MacroType;
 use crate::util::{gen_read_helper, textproc, Consumer};
 use color_eyre::{eyre::eyre, Help, Result, SectionExt};
 use lazy_format::lazy_format as lzf;
+use parking_lot::Mutex;
 use regex::Regex;
 use smartstring::alias::String;
 use std::path::Path;
@@ -19,13 +20,12 @@ use std::{
 use tracing::{debug, error, warn};
 
 const PKGNAMECHARSET: &str = "_-().";
-
 lazy_static::lazy_static! {
 	static ref RE_PQC:	Regex = Regex::new(r"(>=?|<=?|=)\s+(\d+:)?([\w\d.^]+)(-([\w\d.^]+))?(.*)").unwrap();
 	static ref RE_REQ:	Regex = Regex::new(r"(?m)^Requires(?:\(([\w,\s]+)\))?:\s*(.+)$").unwrap();
 	static ref RE_FILE:	Regex = Regex::new(r"(?m)^(%\w+(\(.+\))?\s+)?(.+)$").unwrap();
 	static ref RE_CLOG:	Regex = Regex::new(r"(?m)^\*[ \t]*((\w{3})[ \t]+(\w{3})[ \t]+(\d+)[ \t]+(\d+))[ \t]+(\S+)([ \t]+<([\w@.+]+)>)?([ \t]+-[ \t]+([\d.-^~_\w]+))?$((\n^[^*\n]*)+)").unwrap();
-	static ref RE_PMB:	Regex = Regex::new(r"(\w+)(:\s*)(.+)").unwrap();
+	static ref RE_PMB:	Regex = Regex::new(r"(\w+):\s*(.+)").unwrap();
 	static ref RE_DNL:	Regex = Regex::new(r"%dnl\b").unwrap();
 }
 
@@ -925,10 +925,6 @@ pub struct SpecParser {
 	pub macros: HashMap<String, Vec<MacroType>>,
 	section: RPMSection,
 	cond: Vec<(bool, bool)>, // current, before
-
-	pub(crate) count_line: usize,
-	pub(crate) count_col: usize,
-	pub(crate) count_chard: usize,
 }
 
 impl SpecParser {
@@ -975,7 +971,7 @@ impl SpecParser {
 				"verify" => r.verify.extend(pkgs),
 				"interp" => r.interp.extend(pkgs),
 				"meta" => r.meta.extend(pkgs),
-				_ => self.errors.push(ParserError::UnknownModifier(self.count_line, modifier.into())),
+				_ => self.errors.push(ParserError::UnknownModifier(0, modifier.into())), // FIXME: what's the line number?
 			}
 		}
 		Ok(true)
@@ -1011,7 +1007,7 @@ impl SpecParser {
 		debug_assert_ne!(bytes, 0, "Empty macro definition file '{}'", path.display());
 		for cap in RE.captures_iter(std::str::from_utf8(&buf)?) {
 			let name = &cap[1];
-			let m = MacroType::Runtime { file, offset: 0, def: Box::from(&cap[2]), param: name.ends_with("()") };
+			let m = MacroType::Runtime { file: Arc::clone(&file), offset: 0, def: Box::from(&cap[2]), param: name.ends_with("()") };
 			if let Some(v) = self.macros.get_mut(name) {
 				v.push(m);
 				continue;
@@ -1118,7 +1114,7 @@ impl SpecParser {
 	/// # Errors
 	/// - Invalid syntax. See the error message. (of type [`color_eyre::Report`])
 	/// - Fail to get arch ([`Self::arch()`]) via `uname -m`
-	pub fn _handle_section(&mut self, l: &str, consumer: &Consumer<impl Read>) -> Result<bool> {
+	pub fn _handle_section(&mut self, l: &str, consumer: &mut Consumer<impl Read>) -> Result<bool> {
 		if l.contains('\n') {
 			return Ok(false);
 		}
@@ -1138,7 +1134,7 @@ impl SpecParser {
 		self.section = match &start[1..] {
 			"description" if remain.is_empty() => RPMSection::Description("".into()),
 			"description" => RPMSection::Description({
-				let remaincsm = consumer.range(consumer.pos - remain.len()..consumer.pos).unwrap();
+				let mut remaincsm = consumer.range(consumer.pos - remain.len()..consumer.pos).unwrap();
 				let (_, mut args, flags) = self._param_macro_line_args(&mut remaincsm).map_err(|e| e.wrap_err("Cannot parse arguments to %description"))?;
 				if let Some(x) = flags.iter().find(|x| **x != 'n') {
 					return Err(eyre!("Unexpected %description flag `-{x}`"));
@@ -1155,7 +1151,7 @@ impl SpecParser {
 			}),
 			"package" if remain.is_empty() => return Err(eyre!("Expected arguments to %package")),
 			"package" => {
-				let remaincsm = consumer.range(consumer.pos - remain.len()..consumer.pos).unwrap();
+				let mut remaincsm = consumer.range(consumer.pos - remain.len()..consumer.pos).unwrap();
 				let (_, mut args, flags) = self._param_macro_line_args(&mut remaincsm).map_err(|e| e.wrap_err("Cannot parse arguments to %package"))?;
 				if let Some(x) = flags.iter().find(|x| **x != 'n') {
 					return Err(eyre!("Unexpected %package flag `-{x}`"));
@@ -1237,18 +1233,17 @@ impl SpecParser {
 	/// # Panic
 	/// - The function expects a subpackage to be previously defined and created in
 	///   `self.rpm.packages` and would panic if it was not found. This'd be a bug.
-	pub fn parse<R: std::io::Read>(&mut self, bufread: BufReader<R>, path: Arc<Path>) -> Result<()> {
-		let mut consumer = Consumer::new("".into(), Some(bufread.into()), path);
-		let mut last_pos = consumer.pos;
+	pub fn parse<R: std::io::Read>(&mut self, bufread: BufReader<Box<R>>, path: Arc<Path>) -> Result<()> {
+		let mut consumer: Consumer<R> = Consumer::new("".into(), Some(Arc::new(bufread.into())), Arc::clone(&path));
 		while let Some(rawline) = consumer.read_til_eol() {
-			let mut line;
+			let mut line = String::new();
 			// unwrap: should be safe because we read it already from `rawline`
 			self.parse_macro(&mut line, &mut consumer.range(consumer.pos - rawline.len()..consumer.pos).unwrap())?;
 			let line = line.trim();
 			if line.is_empty() || line.starts_with('#') || RE_DNL.is_match(line) {
 				continue;
 			}
-			if self._handle_section(line, &consumer)? {
+			if self._handle_section(line, &mut consumer)? {
 				continue;
 			}
 			// Check for Requires special preamble syntax first
@@ -1258,18 +1253,19 @@ impl SpecParser {
 			match self.section {
 				RPMSection::Global | RPMSection::Package(_) => {
 					let Some(cap) = RE_PMB.captures(line) else {
-						self.errors.push(ParserError::Others(eyre!("{}: Non-empty non-preamble line: {line}", self.count_line)));
+						self.errors.push(ParserError::Others(eyre!("{}: Non-empty non-preamble line: {line}", 0))); // FIXME: what's the line number?
 						continue;
 					};
-					let offset = consumer.pos - rawline.len() + cap[1].len() + cap[2].len();
+					println!("{} | {}", &cap[1], &cap[2]);
+					let offset = consumer.pos - cap[2].len();
 					// check for list_preambles
 					let Some(strdigit) = &cap[1].strip_suffix(|n: char| n.is_numeric()) else {
-						self.add_preamble(&cap[1], cap[3].into(), path, offset)?;
+						self.add_preamble(&cap[1], cap[2].into(), Arc::clone(&path), offset)?;
 						continue;
 					};
 					let digit = strdigit.parse()?;
 					let name = &cap[1][..cap[1].len() - strdigit.len()];
-					self.add_list_preamble(name, digit, &cap[3])?;
+					self.add_list_preamble(name, digit, &cap[2])?;
 				}
 				RPMSection::Description(ref mut p) => {
 					if p.is_empty() {
@@ -1390,7 +1386,7 @@ impl SpecParser {
 							"overriding existing {} preamble value `{old}` to `{value}`",
 							stringify!($x)
 						);
-						self.errors.push(ParserError::Duplicate(self.count_line, stringify!($x).into()));
+						self.errors.push(ParserError::Duplicate(0, stringify!($x).into())); // FIXME: what's the line number?
 					}
 					let m = MacroType::Runtime { def: Box::from(&*value), file, offset, param: false };
 					if let Some(v) = self.macros.get_mut(stringify!($y)) {
@@ -1426,7 +1422,7 @@ impl SpecParser {
 				"Group" => {
 					if let Some(ref old) = rpm.group {
 						warn!("overriding existing Group preamble value `{old}` to `{value}`");
-						self.errors.push(ParserError::Duplicate(self.count_line, "Group".into()));
+						self.errors.push(ParserError::Duplicate(0, "Group".into())); // FIXME: what's the line number?
 					}
 					rpm.name = Some(value);
 					return Ok(());
@@ -1434,7 +1430,7 @@ impl SpecParser {
 				"Summary" => {
 					if !rpm.summary.is_empty() {
 						warn!("overriding existing Summary preamble value `{}` to `{value}`", rpm.summary);
-						self.errors.push(ParserError::Duplicate(self.count_line, "Summary".into()));
+						self.errors.push(ParserError::Duplicate(0, "Summary".into())); // FIXME: what's the line number?
 					}
 					rpm.summary = value;
 					return Ok(());
@@ -1477,7 +1473,7 @@ impl SpecParser {
 			"Prefix" => todo!(),
 			"DocDir" => todo!(),
 			"RemovePathPostfixes" => todo!(),
-			_ => self.errors.push(ParserError::UnknownPreamble(self.count_line, name.into())),
+			_ => self.errors.push(ParserError::UnknownPreamble(0, name.into())), // FIXME: what's the line number?
 		}
 		Ok(())
 	}
@@ -1784,36 +1780,63 @@ impl SpecParser {
 		// Refactor at your own risk: impossible due to RAII. Fail counter: 2
 		let mut consumer = if let MacroType::Runtime { file, offset, def, param: true } = def {
 			// parameterized macro
-			let mut consumer: Consumer<R> = Consumer::new(Arc::from(*def), None, Arc::clone(file));
+			let mut consumer: Consumer<R> = Consumer::new(Arc::from(Box::as_ref(def)), None, Arc::clone(file));
 			let res = self._param_macro(name, &mut consumer, reader)?;
 			consumer
 		} else if let MacroType::Runtime { file, offset, def, param: false } = def {
 			// it's just text
-			Consumer::new(Arc::from(*def), None, Arc::clone(file))
+			Consumer::new(Arc::from(Box::as_ref(def)), None, Arc::clone(file))
 		} else {
-			let MacroType::Internal(f) = def;
-			let reader = Consumer {
-				file: reader.file,
+			let MacroType::Internal(f): &MacroType = def else { unreachable!() };
+			// * What is this gigantic mess??
+			// `f()` in enum item `MacroType::Internal` does not allow `impl`. But don't worry,
+			// introducing `impl` at home: `dyn`. `newreader` is the upcasted polymorphic version.
+			// The only problem is: `Read` does not impl `Clone` so we have to temporarily own `r`
+			// using `std::mem::take()`, then unwrap/build `Arc<Mutex<BufReader<Box<R>>>>`.
+			let mut newreader: Consumer<dyn Read + '_> = Consumer {
+				file: Arc::clone(&reader.file),
 				pos: reader.pos,
-				r: reader.r.map(|r| Arc::new(BufReader::new(Box::new(Arc::try_unwrap(r).unwrap_or_else(|_| panic!()).into_inner()) as _))),
-				s: reader.s,
+				s: Arc::clone(&reader.s),
+				r: take(&mut reader.r).map(|r| {
+					// * How are we sure about the safety of `Arc::try_unwrap()`?
+					// Not like `f()` will call another macro, so it's certain we won't get to
+					// `_rp_macro()` again if we reach `MacroType::Internal`.
+					let Ok(bufreader) = Arc::try_unwrap(r).map(Mutex::into_inner) else {
+						panic!("Cannot unwrap Arc for Consumer reader")
+					};
+					// then we get the inner `R`, upcast it, then rebuild everything
+					let b = BufReader::new(bufreader.into_inner() as _);
+					Arc::new(Mutex::new(b))
+				}),
 			};
-			f(self, out, &mut reader)?;
+			f(self, out, &mut newreader)?;
+			// Similarly here we just put `r` back to the original `reader`.
+			reader.r = take(&mut newreader.r).map(|r| {
+				let Ok(bufreader) = Arc::try_unwrap(r).map(Mutex::into_inner) else {
+					panic!("Cannot unwrap Arc for Consumer reader")
+				};
+				// * What is this ugly downcasting code?
+				// The compiler doesn't know the actual type of `dyn Read` after upcasting...
+				// Except it does: `R`! We need some unsafe raw pointer arithmetic to downcast it
+				// back to `impl R`.
+				let b = BufReader::new(unsafe { Box::<R>::from_raw(Box::into_raw(bufreader.into_inner()) as *mut R) });
+				Arc::new(Mutex::new(b))
+			});
 			return Ok(());
 		};
 		self.parse_macro(out, &mut consumer)?;
 		Ok(())
 	}
 
-	fn __rawm_shellexpand(shellcmd: &mut String, chars: &mut Consumer<impl Read>, quotes: &mut String) -> Result<()> {
-		let mut shellcmd = String::new();
+	fn __rawm_shellexpand(strout: &mut String, chars: &mut Consumer<impl Read>, quotes: &mut String) -> Result<()> {
 		let req_ql = quotes.len() - 1;
+		let mut shellcmd = String::new();
 		for ch in chars.by_ref() {
 			textproc::chk_ps(quotes, ch)?;
 			if quotes.len() == req_ql {
 				return Err(match Command::new("sh").arg("-c").arg(&*shellcmd).output() {
 					Ok(out) if out.status.success() => {
-						shellcmd.push_str(core::str::from_utf8(&out.stdout)?.trim_end_matches('\n'));
+						strout.push_str(core::str::from_utf8(&out.stdout)?.trim_end_matches('\n'));
 						return Ok(());
 					}
 					Ok(out) => eyre!("Shell expansion command did not succeed")
@@ -1905,6 +1928,7 @@ impl SpecParser {
 			content.push(ch);
 		}
 		exit_chk!();
+		// `%macro`, but if this is the start of the line, `_rp_macro()` might need the remaining line
 		textproc::macro_expand_notflagproc(self, notflag, chars, "", &content, out);
 		Ok(())
 	}
@@ -1923,11 +1947,11 @@ mod tests {
 
 	#[test]
 	fn parse_spec() -> Result<()> {
-		let f = File::open("../tests/test.spec")?;
-		let f = BufReader::new(f);
+		let f = File::open("./tests/test.spec")?;
+		let f = BufReader::new(Box::new(f));
 
 		let mut sp = SpecParser::new();
-		sp.parse(f, Arc::from(Path::new("../tests/test.spec")))?;
+		sp.parse(f, Arc::from(Path::new("./tests/test.spec")))?;
 		println!("Name: {}", sp.rpm.name.unwrap_or_default());
 		println!("Summary: {}", sp.rpm.summary.unwrap_or_default());
 		Ok(())
@@ -1944,8 +1968,8 @@ mod tests {
 	fn simple_macro_expand() -> Result<()> {
 		let mut parser = super::SpecParser::new();
 		parser.macros.insert("macrohai".into(), vec!["hai hai".into()]);
-		let mut out;
-		parser._use_raw_macro(out, &mut ("macrohai".into()))?;
+		let mut out = String::new();
+		parser._use_raw_macro(&mut out, &mut ("macrohai".into()))?;
 		assert_eq!(out, "hai hai");
 		Ok(())
 	}
@@ -1954,8 +1978,8 @@ mod tests {
 		let mut parser = super::SpecParser::new();
 		parser.macros.insert("mhai".into(), vec!["hai hai".into()]);
 		parser.macros.insert("quadhai".into(), vec!["%mhai %{mhai}".into()]);
-		let mut out;
-		parser._use_raw_macro(out, &mut ("quadhai".into()))?;
+		let mut out = String::new();
+		parser._use_raw_macro(&mut out, &mut ("quadhai".into()))?;
 		assert_eq!(out, "hai hai hai hai");
 		Ok(())
 	}
@@ -1966,8 +1990,8 @@ mod tests {
 		parser.macros.insert("idk".into(), vec!["%!?mhai %?!mhai %{mhai}".into()]);
 		parser.macros.insert("idk2".into(), vec!["%{?mhai} %{!mhai} %{!?mhai} %{?!mhai}".into()]);
 		parser.macros.insert("aaa".into(), vec!["%idk %idk2".into()]);
-		let mut out;
-		parser._use_raw_macro(out, &mut ("aaa".into()))?;
+		let mut out = String::new();
+		parser._use_raw_macro(&mut out, &mut ("aaa".into()))?;
 		assert_eq!(out, "  hai hai hai hai hai hai  ");
 		Ok(())
 	}
@@ -1975,8 +1999,8 @@ mod tests {
 	fn shell_macro_expand() -> Result<()> {
 		let mut parser = super::SpecParser::new();
 		parser.macros.insert("x".into(), vec!["%(echo haai | sed 's/a/aa/g')".into()]);
-		let mut out;
-		parser._use_raw_macro(out, &mut ("x".into()))?;
+		let mut out = String::new();
+		parser._use_raw_macro(&mut out, &mut ("x".into()))?;
 		assert_eq!(out, "haaaai");
 		Ok(())
 	}
@@ -1984,12 +2008,12 @@ mod tests {
 	fn presence_macro_expand() -> Result<()> {
 		let mut parser = super::SpecParser::new();
 		parser.macros.insert("x".into(), vec!["%{?not_exist:hai}%{!?not_exist:bai}".into()]);
-		let out;
-		parser._use_raw_macro(out, &mut ("x".into()))?;
+		let mut out = String::new();
+		parser._use_raw_macro(&mut out, &mut ("x".into()))?;
 		assert_eq!(out, "bai");
 		parser.macros.insert("not_exist".into(), vec!["wha".into()]);
-		let out;
-		parser._use_raw_macro(out, &mut ("x".into()))?;
+		out = String::new();
+		parser._use_raw_macro(&mut out, &mut ("x".into()))?;
 		assert_eq!(out, "hai");
 		Ok(())
 	}
@@ -2006,14 +2030,14 @@ mod tests {
 	fn param_macro_expand() {
 		let mut p = super::SpecParser::new();
 		p.macros.insert("hai".into(), vec!["hai, %1! ".into()]);
-		let out;
+		let out = &mut String::new();
 		p.parse_macro(out, &mut "%hai madomado".into()).unwrap();
 		assert_eq!(out, "hai, madomado!");
 	}
 	#[test]
 	fn bad_macro() {
 		let mut p = super::SpecParser::new();
-		let out;
+		let out = &mut String::new();
 		p.parse_macro(out, &mut "%hai %{bai} %!?some %{!?what}".into()).unwrap();
 		assert_eq!(out, "%hai %{bai} %!?some %{!?what}");
 	}
