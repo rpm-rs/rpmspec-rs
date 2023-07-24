@@ -15,30 +15,36 @@ impl std::fmt::Debug for MacroType {
 	}
 }
 
+impl From<&str> for MacroType {
+	fn from(value: &str) -> Self {
+		Self::Runtime { file: Arc::from(Path::new("unknown")), offset: 0, def: Box::from(value), param: false }
+	}
+}
+
 macro_rules! __internal_macros {
 	($(macro $m:ident($p:ident, $o:ident, $r:ident) $body:block )+) => {
 		$(
 			fn $m($p: &mut SpecParser, $o: &mut String, $r: &mut Consumer<Box<dyn Read + '_>>) -> Result<(), ParserError> $body
 		)+
-		lazy_static::lazy_static! {
-			static ref INTERNAL_MACROS: HashMap<String, Vec<MacroType>> = {
-				let ret = HashMap::new();
-				$(
-					ret.insert(stringify!($m).into(), vec![MacroType::Internal($m)]);
-				)+
-				ret
-			};
-		}
+		pub const INTERNAL_MACROS: HashMap<String, Vec<MacroType>> = {
+			let mut ret = HashMap::new();
+			$({
+				let mut name = String::new();
+				name.push_str(stringify!($m));
+				ret.insert(name, vec![MacroType::Internal($m)]);
+			})+
+			ret
+		};
 	};
 }
 
 __internal_macros!(
 	macro undefine(p, o, r) {
 		p.macros.remove(&r.read_til_eol().unwrap());
-		Ok(())	
+		Ok(())
 	}
 	macro hai(p, o, r) {
 		p.macros.remove(&r.read_til_eol().unwrap());
-		Ok(())	
+		Ok(())
 	}
 );

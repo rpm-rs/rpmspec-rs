@@ -1,5 +1,5 @@
 use smartstring::alias::String;
-use std::{ops::Index, path::Path, sync::Arc, io::Read};
+use std::{io::Read, ops::Index, path::Path, sync::Arc};
 use tracing::error;
 
 /// string operations / parsing with consumer
@@ -162,6 +162,12 @@ impl<R: Read> Iterator for Consumer<R> {
 	}
 }
 
+impl From<&str> for Consumer {
+	fn from(s: &str) -> Self {
+		Consumer::new(Arc::from(s), None, Arc::from(Path::new("<unknown>")))
+	}
+}
+
 // somehow you need this to export the macro
 pub(crate) use gen_read_helper;
 
@@ -256,9 +262,12 @@ pub mod textproc {
 			}
 			return;
 		}
-		out.push_str(&res.map_or_else(|e| {
-			debug!("_rp_macro: {e:#}");
-			if content.is_empty() { format!("%{name}") } else { format!("%{{!{name}}}") }.into()
-		}, |_| std::mem::take(buf)));
+		out.push_str(&res.map_or_else(
+			|e| {
+				debug!("_rp_macro: {e:#}");
+				if content.is_empty() { format!("%{name}") } else { format!("%{{!{name}}}") }.into()
+			},
+			|_| std::mem::take(buf),
+		));
 	}
 }
