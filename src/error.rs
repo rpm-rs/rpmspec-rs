@@ -20,9 +20,21 @@ pub enum ParserError {
 	/// Bad conditional operator used in package queries
 	#[error("Invalid conditional operator `{0}` in package query")]
 	BadPkgQCond(String),
+	/// Macro not found (`_rp_macro()`)
+	#[error("Macro not found: {0}")]
+	MacroNotFound(String),
+	/// Macro undefined (`_rp_macro()`)
+	#[error("Macro not found: {0}")]
+	MacroUndefined(String),
 	/// A color_eyre::Report. Some sort of syntax error.
 	#[error("{0:#}")]
 	Others(color_eyre::Report),
+}
+
+impl From<color_eyre::Report> for ParserError {
+	fn from(value: color_eyre::Report) -> Self {
+		Self::Others(value)
+	}
 }
 
 impl Clone for ParserError {
@@ -32,6 +44,8 @@ impl Clone for ParserError {
 			Self::UnknownPreamble(a, b) => Self::UnknownPreamble(*a, b.clone()),
 			Self::Duplicate(a, b) => Self::Duplicate(*a, b.clone()),
 			Self::UnknownModifier(a, b) => Self::UnknownModifier(*a, b.clone()),
+			Self::MacroNotFound(m) => Self::MacroNotFound(m.clone()),
+			Self::MacroUndefined(m) => Self::MacroUndefined(m.clone()),
 			Self::Others(r) => {
 				tracing::warn!("Cloning ParserError::Others(color_eyre::Report):\n{r:#}");
 				Self::Others(color_eyre::eyre::eyre!(r.to_string()))

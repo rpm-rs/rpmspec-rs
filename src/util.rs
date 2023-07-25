@@ -1,7 +1,11 @@
-use smartstring::alias::String;
-use std::{io::{Read, BufReader}, ops::Index, path::Path, sync::Arc};
-use tracing::error;
 use parking_lot::Mutex;
+use smartstring::alias::String;
+use std::{
+	io::{BufReader, Read},
+	path::Path,
+	sync::Arc,
+};
+use tracing::error;
 
 /// string operations / parsing with consumer
 ///
@@ -51,30 +55,31 @@ macro_rules! gen_read_helper {
 
 #[derive(Debug, Clone)]
 pub struct Consumer<R: Read + ?Sized = stringreader::StringReader<'static>> {
-	pub s: Arc<str>,
+	pub s: Arc<Mutex<String>>,
 	pub r: Option<Arc<Mutex<BufReader<Box<R>>>>>,
 	pub file: Arc<Path>,
 	pub pos: usize,
+	pub end: usize,
 }
 
 impl Default for Consumer {
 	fn default() -> Self {
-		Self { s: Arc::from(""), r: None, file: Arc::from(Path::new("")), pos: 0 }
+		Self { s: Arc::new(Mutex::new("".into())), r: None, file: Arc::from(Path::new("")), pos: 0, end: 0 }
 	}
 }
 
 impl<R: Read + ?Sized> Consumer<R> {
-	pub fn new(s: Arc<str>, r: Option<Arc<Mutex<BufReader<Box<R>>>>>, file: Arc<Path>) -> Self {
-		Self { s, r, pos: 0, file }
+	pub fn new(s: Arc<Mutex<String>>, r: Option<Arc<Mutex<BufReader<Box<R>>>>>, file: Arc<Path>) -> Self {
+		Self { end: 0, s, r, pos: 0, file }
 	}
 	#[must_use]
 	pub fn range(&mut self, r: std::ops::Range<usize>) -> Option<Consumer<R>> {
 		let cur = self.pos;
-		while self.pos >= r.end {
+		while self.s.lock().len() < r.end {
 			self.next()?;
 		}
 		self.pos = cur;
-		Some(Self { s: Arc::from(self.s.index(r)), r: None, file: Arc::clone(&self.file), pos: 0 })
+		Some(Self { s: Arc::clone(&self.s), r: None, file: Arc::clone(&self.file), pos: r.start, end: r.end })
 	}
 	#[inline]
 	pub fn back(&mut self) {
@@ -154,16 +159,21 @@ impl<R: ?Sized + Read> Iterator for Consumer<R> {
 	type Item = char;
 
 	fn next(&mut self) -> Option<Self::Item> {
-		if let Some(c) = self.s.chars().nth(self.pos) {
+		if self.end != 0 && self.pos >= self.end {
+			return None;
+		}
+		let mut s = self.s.lock();
+		if let Some(c) = s.chars().nth(self.pos) {
 			self.pos += 1;
 			return Some(c);
 		}
-		let mut buf: Vec<u8> = vec![];
-		if self.r.as_mut()?.lock().read(&mut buf).ok()? == 0 {
+		let mut buf = [0; 64];
+		let nbyte = self.r.as_mut()?.lock().read(&mut buf).ok()?;
+		if nbyte == 0 {
 			return None; // EOF
 		}
-		self.s = Arc::from(core::str::from_utf8(&buf).map_err(|e| error!("cannot parse buffer `{buf:?}`: {e}")).ok()?);
-		let c = unsafe { self.s.chars().nth(self.pos).unwrap_unchecked() };
+		s.push_str(core::str::from_utf8(&buf[..nbyte]).map_err(|e| color_eyre::eyre::eyre!("cannot parse buffer `{buf:?}`: {e}")).ok()?);
+		let c = unsafe { s.chars().nth(self.pos).unwrap_unchecked() };
 		self.pos += 1;
 		return Some(c);
 	}
@@ -171,7 +181,7 @@ impl<R: ?Sized + Read> Iterator for Consumer<R> {
 
 impl From<&str> for Consumer {
 	fn from(s: &str) -> Self {
-		Consumer::new(Arc::from(s), None, Arc::from(Path::new("<?>")))
+		Consumer::new(Arc::from(Mutex::new(s.into())), None, Arc::from(Path::new("<?>")))
 	}
 }
 
@@ -179,13 +189,10 @@ impl From<&str> for Consumer {
 pub(crate) use gen_read_helper;
 
 pub mod textproc {
+	use super::Consumer;
 	use color_eyre::{eyre::eyre, Result};
 	use smartstring::alias::String;
-	use tracing::{debug, warn};
-
-	use crate::parse::SpecParser;
-
-	use super::Consumer;
+	use tracing::warn;
 
 	pub fn chk_ps(quotes: &mut String, ch: char) -> Result<()> {
 		if ch == '\'' {
@@ -255,26 +262,5 @@ pub mod textproc {
 			return true;
 		}
 		false
-	}
-
-	/// Expand macros depending on `notflag`.
-	///
-	/// when %a is undefined, %{!a} expands to %{!a}, but %!a expands to %a.
-	pub fn macro_expand_notflagproc<R: std::io::Read>(parser: &mut SpecParser, notflag: bool, reader: &mut Consumer<R>, content: &str, name: &str, out: &mut String) {
-		let mut buf = String::new();
-		let res = parser._rp_macro(name, reader, &mut buf);
-		if notflag {
-			if let Ok(()) = res {
-				out.push_str(&buf);
-			}
-			return;
-		}
-		out.push_str(&res.map_or_else(
-			|e| {
-				debug!("_rp_macro: {e:#}");
-				if content.is_empty() { format!("%{name}") } else { format!("%{{!{name}}}") }.into()
-			},
-			|_| buf,
-		));
 	}
 }
