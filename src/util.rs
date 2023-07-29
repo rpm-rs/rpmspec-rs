@@ -173,7 +173,7 @@ impl<R: ?Sized + Read> Iterator for Consumer<R> {
 			return None; // EOF
 		}
 		s.push_str(core::str::from_utf8(&buf[..nbyte]).map_err(|e| color_eyre::eyre::eyre!("cannot parse buffer `{buf:?}`: {e}")).ok()?);
-		let c = unsafe { s.chars().nth(self.pos).unwrap_unchecked() };
+		let Some(c) = s.chars().nth(self.pos) else { panic!("Consumer has no `s[{}]` after reading from `r`, where `s` is: {s}", self.pos) };
 		self.pos += 1;
 		return Some(c);
 	}

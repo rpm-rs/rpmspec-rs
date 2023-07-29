@@ -43,6 +43,12 @@ impl From<rlua::Error> for ParserError {
 	}
 }
 
+impl From<std::io::Error> for ParserError {
+	fn from(value: std::io::Error) -> Self {
+		Self::Others(color_eyre::eyre::eyre!(value))
+	}
+}
+
 impl Clone for ParserError {
 	fn clone(&self) -> Self {
 		match self {

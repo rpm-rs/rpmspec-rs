@@ -1144,6 +1144,7 @@ impl SpecParser {
 				if args.len() != 1 {
 					return Err(eyre!("Expected 1, found {} arguments (excluding flags) to %description", args.len()));
 				}
+				// SAFETY: `args.len() == 1` guaranteed above.
 				let arg = unsafe { args.get_unchecked_mut(0) };
 				if flags.is_empty() {
 					format!("{}-{arg}", self.rpm.name.as_ref().ok_or(eyre!("Expected package name before subpackage `{arg}`"))?).into()
@@ -1161,6 +1162,7 @@ impl SpecParser {
 				if args.len() != 1 {
 					return Err(eyre!("Expected 1, found {} arguments (excluding flags) to %package", args.len()));
 				}
+				// SAFETY: `args.len() == 1` guaranteed above.
 				let arg = unsafe { args.get_unchecked_mut(0) };
 				let name = if flags.is_empty() { format!("{}-{arg}", self.rpm.name.as_ref().ok_or(eyre!("Expected package name before subpackage `{arg}`"))?).into() } else { take(arg) };
 				if self.rpm.packages.contains_key(&name) {
@@ -1820,14 +1822,15 @@ impl SpecParser {
 					end: 0,
 				};
 				f(self, out, &mut newreader)?;
-				// Similarly here we just put `r` back to the original `reader`.
+				// Similarly here we just put `r` back into the original `reader`.
 				reader.r = take(&mut newreader.r).map(Arc::try_unwrap).map(|r| {
 					let Ok(bufreader) = r.map(Mutex::into_inner) else {
 						panic!("Cannot unwrap Arc for Consumer reader")
 					};
 					// * What is this ugly downcasting code?
+					// SAFETY:
 					// The compiler doesn't know the actual type of `dyn Read` after upcasting...
-					// Except it does: `R`! We just need some unsafe raw pointer arithmetic to downcast it.
+					// Except it does: `R`! We just need some raw pointer arithmetic to downcast it.
 					let r = unsafe { Box::<R>::from_raw(Box::into_raw(bufreader.into_inner()) as *mut R) };
 					Arc::new(Mutex::new(BufReader::new(r)))
 				});
