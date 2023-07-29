@@ -37,6 +37,12 @@ impl From<color_eyre::Report> for ParserError {
 	}
 }
 
+impl From<rlua::Error> for ParserError {
+	fn from(value: rlua::Error) -> Self {
+		Self::Others(color_eyre::eyre::eyre!(value))
+	}
+}
+
 impl Clone for ParserError {
 	fn clone(&self) -> Self {
 		match self {
