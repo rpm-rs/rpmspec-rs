@@ -19,9 +19,7 @@ impl std::fmt::Debug for MacroType {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
 			Self::Internal(_) => f.write_str("<builtin>")?,
-			Self::Runtime { offset, len, s, .. } => {
-				f.write_str(&s.lock()[*offset..*&(offset + len)])?;
-			}
+			Self::Runtime { offset, len, s, .. } => f.write_str(&s.lock()[*offset..*&(offset + len)])?,
 		}
 		Ok(())
 	}
@@ -107,7 +105,12 @@ __internal_macros!(
 		Ok(())
 	}
 	macro expr(p, o, r) {
-		todo!()
+		let mut rawexpression = String::new();
+		expand(p, &mut rawexpression, r)?;
+		// any type will do
+		let mut csm: Consumer<std::fs::File> = Consumer::new(Arc::new(Mutex::new(rawexpression)), None, Arc::from(Path::new("<expr>")));
+		p.parse_expr(o, &mut csm)?;
+		Ok(())
 	}
 	macro lua(p, o, r) {
 		let content: String = r.collect();
@@ -141,9 +144,9 @@ __internal_macros!(
 		o.push('"');
 		Ok(())
 	}
-	macro gsub(p, o, r) {
-		todo!()
-	}
+	// macro gsub(p, o, r) {
+	// 	todo!()
+	// }
 	macro len(_p, o, r) {
 		o.push_str(&r.collect::<Box<[char]>>().len().to_string());
 		Ok(())
@@ -153,18 +156,18 @@ __internal_macros!(
 		o.push_str(&r.collect::<String>().to_ascii_lowercase());
 		Ok(())
 	}
-	macro rep(p, o, r) {
-		todo!()
-	}
+	// macro rep(p, o, r) {
+	// 	todo!()
+	// }
 	macro reverse(_p, o, r) {
 		let mut chs = r.collect::<Box<[char]>>();
 		chs.reverse();
 		chs.into_iter().for_each(|ch| o.push(*ch));
 		Ok(())
 	}
-	macro sub(p, o, r) {
-		todo!()
-	}
+	// macro sub(p, o, r) {
+	// 	todo!()
+	// }
 	macro upper(_p, o, r) {
 		// assume it's ascii?
 		o.push_str(&r.collect::<String>().to_ascii_uppercase());
@@ -242,9 +245,25 @@ __internal_macros!(
 	macro u2p(p, o, r) {
 		url2path(p, o, r)
 	}
-	macro uncompress(p, o, r) {
+	macro uncompress(_p, o, r) {
 		//? https://github.com/rpm-software-management/rpm/blob/master/tools/rpmuncompress.c#L69
-		todo!()
+		let path: String = r.collect();
+		use crate::tools::uncompress::CmprxFmt;
+		o.push_str(match CmprxFmt::try_from(Path::new(&*path)) {
+			Ok(CmprxFmt::Nil) => "cat ",
+			Ok(CmprxFmt::Other) => "gzip -dc ",
+			Ok(CmprxFmt::BZIP2) => "bzip2 -dc ",
+			Ok(CmprxFmt::ZIP) => "unzip ",
+			Ok(CmprxFmt::LZMA | CmprxFmt::XZ) => "xz -dc ",
+			Ok(CmprxFmt::LZIP) => "lzip -dc ",
+			Ok(CmprxFmt::LRZIP) => "lrzip -dqo- ",
+			Ok(CmprxFmt::SEVENZIP) => "7zip x ",
+			Ok(CmprxFmt::ZSTD) => "zstd -dc ",
+			Ok(CmprxFmt::GEM) => "gem unpack ",
+			Err(_) => return Ok(()),
+		});
+		o.push_str(&path);
+		Ok(())
 	}
 	macro getncpus(_p, o, r) {
 		if r.next().is_some() {
@@ -303,9 +322,9 @@ __internal_macros!(
 		r.for_each(|c| o.push(c));
 		Ok(())
 	}
-	macro trace(p, o, r) {
-		todo!()
-	}
+	// macro trace(p, o, r) {
+	// 	todo!()
+	// }
 	macro dump(p, _o, r) {
 		let args = r.collect::<String>();
 		if args.len() != 0 {
@@ -325,7 +344,7 @@ __internal_macros!(
 				let col = offset - front.find('\n').unwrap_or(0);
 				let f = file.display();
 				let p = if *param { "{}" } else { "" };
-				let inner = &ss[*offset..*offset+*len];
+				let inner = &ss[*offset..*offset + *len];
 				stdout.write_fmt(format_args!("[{f}:{nline}:{col}]\t%{k}{p}\t{inner}\n"))?;
 			}
 		}

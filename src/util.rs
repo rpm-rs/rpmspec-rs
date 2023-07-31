@@ -22,7 +22,7 @@ macro_rules! gen_read_helper {
 		macro_rules! exit_chk {
 			() => {
 				if !$quotes.is_empty() {
-					return Err(eyre!("Unclosed quotes: `{}`", $quotes));
+					return Err(eyre!("Unclosed quotes: `{}`", $quotes).into());
 				}
 			};
 		}

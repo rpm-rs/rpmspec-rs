@@ -2,6 +2,7 @@
 use crate::error::ParserError;
 use crate::macros::MacroType;
 use crate::util::{gen_read_helper, textproc, Consumer};
+use chumsky::Parser;
 use color_eyre::{eyre::eyre, Help, Result, SectionExt};
 use lazy_format::lazy_format as lzf;
 use parking_lot::Mutex;
@@ -946,6 +947,24 @@ impl SpecParser {
 		Ok(())
 	}
 
+	/// Parses an `%[expression]`.
+	pub fn parse_expr(&mut self, out: &mut String, reader: &mut Consumer<impl Read>) -> Result<(), ParserError> {
+		let parser = crate::tools::expr::Expr::parser();
+		let expr = parser.parse(&*reader.collect::<String>())?;
+		out.push_str(&expr.eval(self)?.to_string());
+		Ok(())
+	}
+
+	/// Define a new macro.
+	pub fn define_macro(&mut self, name: String, csm: Consumer<dyn Read + '_>, param: bool, len: usize) {
+		let m = MacroType::Runtime { file: Arc::clone(&csm.file), offset: csm.pos, s: Arc::clone(&csm.s), param, len };
+		if let Some(v) = self.macros.get_mut(&name) {
+			v.push(m);
+			return;
+		}
+		self.macros.insert(name, vec![m]);
+	}
+
 	/// Parse the `Requires:` or `Requires(...):` preambles.
 	///
 	/// # Errors
@@ -1225,16 +1244,6 @@ impl SpecParser {
 		Ok(true)
 	}
 
-	/// Define a new macro.
-	pub fn define_macro(&mut self, name: String, csm: Consumer<dyn Read + '_>, param: bool, len: usize) {
-		let m = MacroType::Runtime { file: Arc::clone(&csm.file), offset: csm.pos, s: Arc::clone(&csm.s), param, len };
-		if let Some(v) = self.macros.get_mut(&name) {
-			v.push(m);
-			return;
-		}
-		self.macros.insert(name, vec![m]);
-	}
-
 	/// Parses the spec file given as a [`io::BufReader`].
 	///
 	/// # Errors
@@ -1491,96 +1500,6 @@ impl SpecParser {
 		Ok(())
 	}
 
-	// fn _internal_macro(&mut self, name: &str, reader: &mut Consumer) -> Option<String> {
-	// 	match name {
-	// 		"define" | "global" => {
-	// 			let def = reader.read_til_eol()?;
-	// 			let def = def.trim();
-	// 			let Some((name, def)) = def.split_once(' ') else {
-	// 				error!("Invalid syntax: `%define {def}`");
-	// 				return None
-	// 			};
-	// 			let mut def: String = def.into();
-	// 			let name: String = name.strip_suffix("()").map_or_else(
-	// 				|| name.into(),
-	// 				|x| {
-	// 					def.push(' ');
-	// 					x.into()
-	// 				},
-	// 			);
-	// 			self.macros.insert(name, def);
-	// 			Some("".into())
-	// 		}
-	// 		"undefine" => {
-	// 			self.macros.remove(name);
-	// 			Some("".into())
-	// 		}
-	// 		"load" => {
-	// 			self.load_macro_from_file(&std::path::PathBuf::from(&*reader.collect::<String>())).ok()?;
-	// 			Some("".into())
-	// 		}
-	// 		"expand" => self.parse_macro(x, reader).ok(),
-	// 		"expr" => unimplemented!(),
-	// 		"lua" => {
-	// 			let content: String = reader.collect();
-	// 			// HACK: `Arc<Mutex<SpecParser>>` as rlua fns are of `Fn` but they need `&mut SpecParser`.
-	// 			// HACK: The mutex needs to momentarily *own* `self`.
-	// 			let parser = Arc::new(Mutex::new(take(self)));
-	// 			let out = crate::lua::run(&parser, &content);
-	// 			std::mem::swap(self, &mut Arc::try_unwrap(parser).expect("Cannot unwrap Arc for print() output in lua").into_inner()); // break down Arc then break down Mutex
-	// 			match out {
-	// 				Ok(s) => Some(s.into()),
-	// 				Err(e) => {
-	// 					error!("%lua failed: {e:#}");
-	// 					None
-	// 				}
-	// 			}
-	// 		}
-	// 		"macrobody" => unimplemented!(),
-	// 		"quote" => unimplemented!(),
-	// 		"gsub" => unimplemented!(),
-	// 		"len" => Some(format!("{}", reader.collect::<Box<[char]>>().len()).into()),
-	// 		"lower" => Some(reader.collect::<String>().to_lowercase().into()),
-	// 		"rep" => unimplemented!(),
-	// 		"reverse" => unimplemented!(),
-	// 		"sub" => unimplemented!(),
-	// 		"upper" => unimplemented!(),
-	// 		"shescape" => unimplemented!(),
-	// 		"shrink" => unimplemented!(),
-	// 		"basename" => unimplemented!(),
-	// 		"dirname" => unimplemented!(),
-	// 		"exists" => unimplemented!(),
-	// 		"suffix" => unimplemented!(),
-	// 		"url2path" => unimplemented!(),
-	// 		"uncompress" => unimplemented!(),
-	// 		"getncpus" => unimplemented!(),
-	// 		"getconfidir" => unimplemented!(),
-	// 		"getenv" => unimplemented!(),
-	// 		"rpmversion" => unimplemented!(),
-	// 		"echo" => {
-	// 			println!("{}", reader.collect::<String>());
-	// 			Some("".into())
-	// 		}
-	// 		"warn" => {
-	// 			warn!("{}", reader.collect::<String>());
-	// 			Some("".into())
-	// 		}
-	// 		"error" => {
-	// 			error!("{}", reader.collect::<String>());
-	// 			Some("".into())
-	// 		}
-	// 		"verbose" => unimplemented!(),
-	// 		"S" => unimplemented!(),
-	// 		"P" => unimplemented!(),
-	// 		"trace" => {
-	// 			trace!("{}", reader.collect::<String>());
-	// 			Some("".into())
-	// 		}
-	// 		"dump" => unimplemented!(),
-	// 		_ => None,
-	// 	}
-	// }
-
 	// TODO: optimizations?
 	fn _param_macro_args(&mut self, reader: &mut Consumer<impl Read>) -> Result<(String, Vec<String>, Vec<char>)> {
 		// we start AFTER %macro_name
@@ -1700,7 +1619,8 @@ impl SpecParser {
 		};
 		if !content.starts_with('-') {
 			// normal %macros
-			return self._use_raw_macro(res, &mut def.range(def.pos - content.len() - 2..def.pos).expect("Cannot unwind consumer to `{...}`"));
+			self._use_raw_macro(res, &mut def.range(def.pos - content.len() - 2..def.pos).expect("Cannot unwind consumer to `{...}`"))?;
+			return Ok(());
 		}
 		if let Some(content) = content.strip_suffix('*') {
 			if content.len() != 2 {
@@ -1899,28 +1819,26 @@ impl SpecParser {
 
 	/// parse the stuff after %, and determines `{[()]}`. returns expanded macro.
 	/// FIXME: please REFACTOR me!!
-	pub(crate) fn _use_raw_macro<R: Read>(&mut self, out: &mut String, chars: &mut Consumer<R>) -> Result<()> {
+	pub(crate) fn _use_raw_macro<R: Read>(&mut self, out: &mut String, chars: &mut Consumer<R>) -> Result<(), ParserError> {
 		debug!("reading macro");
 		let (mut notflag, mut question, mut first) = (false, false, true);
 		let (mut content, mut quotes) = (String::new(), String::new());
 		gen_read_helper!(chars quotes);
 		while let Some(ch) = chars.next() {
-			textproc::chk_ps(&mut quotes, ch)?; // we read until we encounter '}' or ':' or the end
 			if textproc::flag(&mut question, &mut notflag, ch) {
 				continue;
 			}
+			textproc::chk_ps(&mut quotes, ch)?; // we read until we encounter '}' or ':' or the end
 			match ch {
 				'{' if !first => {
 					textproc::back(chars, &mut quotes, '{')?;
 					break;
 				}
 				'{' => {
-					let req_ql = quotes.len() - 1;
 					let mut name = String::new();
 					while let Some(ch) = chars.next() {
 						textproc::chk_ps(&mut quotes, ch)?;
-						if quotes.len() == req_ql {
-							exit_chk!();
+						if quotes.len() == 0 {
 							if !(question && notflag) {
 								self._macro_expand_flagproc(question, notflag, chars, &name, out, true)?;
 							}
@@ -1930,8 +1848,7 @@ impl SpecParser {
 							let mut content = String::new();
 							for ch in chars.by_ref() {
 								textproc::chk_ps(&mut quotes, ch)?;
-								if quotes.len() == req_ql {
-									exit_chk!();
+								if quotes.len() == 0 {
 									let mut chars = chars.range(chars.pos - content.len() - 1..chars.pos - 1).expect("Cannot unwind consumer to `{*:...}`");
 									if question {
 										if self.macros.contains_key(&name) ^ notflag {
@@ -1944,14 +1861,33 @@ impl SpecParser {
 								}
 								content.push(ch);
 							}
-							return Err(eyre!("EOF but `%{{...:...` is not ended with `}}`"));
+							return Err(eyre!("EOF but `%{{...:...` is not ended with `}}`").into());
 						}
 						if textproc::flag(&mut question, &mut notflag, ch) {
 							continue;
 						}
 						name.push(ch);
 					}
-					return Err(eyre!("EOF while parsing `%{{...`"));
+					return Err(eyre!("EOF while parsing `%{{...`").into());
+				}
+				'[' if !first => {
+					textproc::back(chars, &mut quotes, '[')?;
+					break;
+				}
+				'[' => {
+					let start = chars.pos;
+					while let Some(ch) = chars.next() {
+						textproc::chk_ps(&mut quotes, ch)?;
+						if !quotes.is_empty() {
+							continue;
+						}
+						return self.parse_expr(out, &mut chars.range(start..chars.pos).expect("Cannot unwind consumer to `%[...]`"));
+					}
+					return Err(eyre!("EOF but `%[...` is not ended with `]`").into());
+				}
+				'(' if !first => {
+					textproc::back(chars, &mut quotes, '(')?;
+					break;
 				}
 				'(' => {
 					if !content.is_empty() {
@@ -1961,7 +1897,8 @@ impl SpecParser {
 					if notflag || question {
 						error!("flags (! and ?) are not supported for %().");
 					}
-					return Self::__rawm_shellexpand(out, chars, &mut quotes);
+					Self::__rawm_shellexpand(out, chars, &mut quotes)?;
+					return Ok(());
 				}
 				_ if !(ch.is_ascii_alphanumeric() || ch == '_') => {
 					textproc::back(chars, &mut quotes, ch)?;
@@ -1977,7 +1914,6 @@ impl SpecParser {
 		if !(question && notflag) {
 			self._macro_expand_flagproc(question, notflag, chars, &content, out, false)?;
 		}
-		println!("out :: {out}");
 		Ok(())
 	}
 

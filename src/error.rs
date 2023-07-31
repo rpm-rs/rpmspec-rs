@@ -26,6 +26,9 @@ pub enum ParserError {
 	/// Macro undefined (`_rp_macro()`)
 	#[error("Macro not found: {0}")]
 	MacroUndefined(String),
+	/// Bad Expresssion `%[]`
+	#[error("Bad RPM Expression: {0:#?}")]
+	BadExpression(crate::tools::expr::ExprErr),
 	/// A color_eyre::Report. Some sort of syntax error.
 	#[error("{0:#}")]
 	Others(color_eyre::Report),
@@ -49,6 +52,18 @@ impl From<std::io::Error> for ParserError {
 	}
 }
 
+impl From<crate::tools::expr::ExprErr> for ParserError {
+	fn from(value: crate::tools::expr::ExprErr) -> Self {
+		Self::BadExpression(value)
+	}
+}
+
+impl From<Vec<chumsky::error::Simple<char>>> for ParserError {
+	fn from(value: Vec<chumsky::error::Simple<char>>) -> Self {
+		Self::BadExpression(crate::tools::expr::ExprErr::BadExprParse(value.into_boxed_slice()))
+	}
+}
+
 impl Clone for ParserError {
 	fn clone(&self) -> Self {
 		match self {
@@ -58,6 +73,7 @@ impl Clone for ParserError {
 			Self::UnknownModifier(a, b) => Self::UnknownModifier(*a, b.clone()),
 			Self::MacroNotFound(m) => Self::MacroNotFound(m.clone()),
 			Self::MacroUndefined(m) => Self::MacroUndefined(m.clone()),
+			Self::BadExpression(e) => Self::BadExpression(e.clone()),
 			Self::Others(r) => {
 				tracing::warn!("Cloning ParserError::Others(color_eyre::Report):\n{r:#}");
 				Self::Others(color_eyre::eyre::eyre!(r.to_string()))

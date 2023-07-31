@@ -20,3 +20,4 @@ pub mod parse;
 mod util;
 pub mod lua;
 mod macros;
+pub mod tools;
