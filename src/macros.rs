@@ -1,3 +1,6 @@
+//! Macros in RPM
+//! 
+//! <https://rpm-software-management.github.io/rpm/manual/macros.html>
 use crate::{error::ParserError as PE, parse::SpecParser, util::Consumer};
 use color_eyre::eyre::eyre;
 use parking_lot::Mutex;
@@ -32,7 +35,7 @@ impl From<&str> for MacroType {
 }
 
 macro_rules! __internal_macros {
-	($(macro $m:ident($p:ident, $o:ident, $r:ident) $body:block )+) => {
+	($(macro $m:ident($p:pat, $o:pat, $r:pat) $body:block )+) => {
 		$(
 			#[allow(non_snake_case)]
 			fn $m($p: &mut SpecParser, $o: &mut String, $r: &mut Consumer<dyn Read + '_>) -> Result<(), PE> $body
@@ -52,7 +55,7 @@ macro_rules! __internal_macros {
 // you will see some `#[rustfmt::skip]`, this is related to
 // https://github.com/rust-lang/rustfmt/issues/5866
 __internal_macros!(
-	macro define(p, _o, r) {
+	macro define(p, _, r) {
 		while let Some(ch) = r.next() {
 			if !ch.is_whitespace() {
 				r.back();
@@ -75,11 +78,11 @@ __internal_macros!(
 	macro global(p, o, r) {
 		define(p, o, r)
 	}
-	macro undefine(p, _o, r) {
+	macro undefine(p, _, r) {
 		p.macros.remove(&r.read_til_eol().unwrap());
 		Ok(())
 	}
-	macro load(p, _o, r) {
+	macro load(p, _, r) {
 		let f: String = r.collect();
 		p.load_macro_from_file(&std::path::Path::new(&*f))?;
 		Ok(())
@@ -138,7 +141,7 @@ __internal_macros!(
 		}
 		Ok(())
 	}
-	macro quote(_p, o, r) {
+	macro quote(_, o, r) {
 		o.push('"');
 		o.push_str(&r.collect::<String>());
 		o.push('"');
@@ -147,11 +150,11 @@ __internal_macros!(
 	// macro gsub(p, o, r) {
 	// 	todo!()
 	// }
-	macro len(_p, o, r) {
+	macro len(_, o, r) {
 		o.push_str(&r.collect::<Box<[char]>>().len().to_string());
 		Ok(())
 	}
-	macro lower(_p, o, r) {
+	macro lower(_, o, r) {
 		// assume it's ascii?
 		o.push_str(&r.collect::<String>().to_ascii_lowercase());
 		Ok(())
@@ -159,7 +162,7 @@ __internal_macros!(
 	// macro rep(p, o, r) {
 	// 	todo!()
 	// }
-	macro reverse(_p, o, r) {
+	macro reverse(_, o, r) {
 		let mut chs = r.collect::<Box<[char]>>();
 		chs.reverse();
 		chs.into_iter().for_each(|ch| o.push(*ch));
@@ -168,12 +171,12 @@ __internal_macros!(
 	// macro sub(p, o, r) {
 	// 	todo!()
 	// }
-	macro upper(_p, o, r) {
+	macro upper(_, o, r) {
 		// assume it's ascii?
 		o.push_str(&r.collect::<String>().to_ascii_uppercase());
 		Ok(())
 	}
-	macro shescape(_p, o, r) {
+	macro shescape(_, o, r) {
 		o.push('\'');
 		for ch in r {
 			if ch == '\'' {
@@ -186,7 +189,7 @@ __internal_macros!(
 		o.push('\'');
 		Ok(())
 	}
-	macro shrink(_p, o, r) {
+	macro shrink(_, o, r) {
 		while let Some(ch) = r.next() {
 			if !ch.is_whitespace() {
 				o.push(ch);
@@ -207,27 +210,27 @@ __internal_macros!(
 		}
 		Ok(())
 	}
-	macro basename(_p, o, r) {
+	macro basename(_, o, r) {
 		// according to testing this has nothing to do with the `basename` command
 		let s: String = r.collect();
 		o.push_str(s.rsplit_once('/').map_or(&s, |(_, x)| x));
 		Ok(())
 	}
-	macro dirname(_p, o, r) {
+	macro dirname(_, o, r) {
 		let s: String = r.collect();
 		o.push_str(s.rsplit_once('/').map_or(&s, |(x, _)| x));
 		Ok(())
 	}
-	macro exists(_p, o, r) {
+	macro exists(_, o, r) {
 		o.push(if Path::new(&*r.collect::<String>()).exists() { '1' } else { '0' });
 		Ok(())
 	}
-	macro suffix(_p, o, r) {
+	macro suffix(_, o, r) {
 		let s: String = r.collect();
 		o.push_str(s.rsplit_once('.').map_or("", |(_, x)| x));
 		Ok(())
 	}
-	macro url2path(_p, o, r) {
+	macro url2path(_, o, r) {
 		// ? https://github.com/rpm-software-management/rpm/blob/master/rpmio/url.c#L50
 		let s: String = r.collect();
 		#[rustfmt::skip]
@@ -245,7 +248,7 @@ __internal_macros!(
 	macro u2p(p, o, r) {
 		url2path(p, o, r)
 	}
-	macro uncompress(_p, o, r) {
+	macro uncompress(_, o, r) {
 		//? https://github.com/rpm-software-management/rpm/blob/master/tools/rpmuncompress.c#L69
 		let path: String = r.collect();
 		use crate::tools::uncompress::CmprxFmt;
@@ -265,7 +268,7 @@ __internal_macros!(
 		o.push_str(&path);
 		Ok(())
 	}
-	macro getncpus(_p, o, r) {
+	macro getncpus(_, o, r) {
 		if r.next().is_some() {
 			r.back();
 			tracing::warn!(args=?r.collect::<String>(), "Unnecessary arguments supplied to `%getncpus`.");
@@ -273,7 +276,7 @@ __internal_macros!(
 		o.push_str(&num_cpus::get().to_string());
 		Ok(())
 	}
-	macro getconfidir(_p, o, _r) {
+	macro getconfidir(_, o, _) {
 		let res = std::env::var("RPM_CONFIGDIR");
 		if let Err(std::env::VarError::NotUnicode(s)) = res {
 			return Err(eyre!("%{{getconfdir}} failed: While grabbing env var `RPM_CONFIGDIR`: Non-unicode OsString {s:?}").into());
@@ -281,7 +284,7 @@ __internal_macros!(
 		o.push_str(res.as_ref().map(|x| &**x).unwrap_or("/usr/lib/rpm"));
 		Ok(())
 	}
-	macro getenv(_p, o, r) {
+	macro getenv(_, o, r) {
 		let name: String = r.collect();
 		match std::env::var(&*name) {
 			Ok(x) => o.push_str(&x),
@@ -290,22 +293,22 @@ __internal_macros!(
 		}
 		Ok(())
 	}
-	macro rpmversion(_p, _o, _r) {
+	macro rpmversion(_, _, _) {
 		todo!()
 	}
-	macro echo(_p, _o, r) {
+	macro echo(_, _, r) {
 		tracing::info!("{}", r.collect::<String>());
 		Ok(())
 	}
-	macro warn(_p, _o, r) {
+	macro warn(_, _, r) {
 		tracing::warn!("{}", r.collect::<String>());
 		Ok(())
 	}
-	macro error(_p, _o, r) {
+	macro error(_, _, r) {
 		tracing::error!("{}", r.collect::<String>());
 		Ok(())
 	}
-	macro verbose(_p, o, _r) {
+	macro verbose(_, o, _) {
 		// FIXME
 		o.push('0');
 		Ok(())
@@ -325,7 +328,7 @@ __internal_macros!(
 	// macro trace(p, o, r) {
 	// 	todo!()
 	// }
-	macro dump(p, _o, r) {
+	macro dump(p, _, r) {
 		let args = r.collect::<String>();
 		if args.len() != 0 {
 			tracing::warn!(?args, "Unexpected arguments to %dump");

@@ -9,127 +9,259 @@
 //! there are two things: `rpm` and `posix`. See more information:
 //! <https://rpm-software-management.github.io/rpm/manual/lua.html>
 #![allow(clippy::unnecessary_wraps, clippy::needless_pass_by_value)]
+use crate::parse::SpecParser;
 use parking_lot::Mutex;
-use rlua::Lua;
+use rlua::{Lua, Result};
 use std::sync::Arc;
-
-use base64::{engine::general_purpose::STANDARD, Engine};
-use rlua::{Context, ExternalError, Result};
-
-use crate::{macros::MacroType, parse::SpecParser};
-
-use repl::repl;
-
 mod repl;
 
-pub(crate) fn b64decode(_: Context, arg: String) -> Result<String> {
-	String::from_utf8(STANDARD.decode(arg).map_err(rlua::ExternalError::to_lua_err)?).map_err(rlua::ExternalError::to_lua_err)
+macro_rules! __lua {
+	(@type $t:ty | $default:ty) => {
+		$t
+	};
+	(@type | $default:ty) => {
+		$default
+	};
+	($(mod $ext:ident{$(fn $name:ident($p:pat$(=>$pt:ty)?, $ctx:pat$(=>$ct:ty)?, $arg:pat$(=>$at:ty)?)$(: $res:ty)? $body:block)+})+) => {
+		$(
+			mod $ext {
+				#[allow(unused_imports)]
+				use crate::{macros::MacroType, parse::SpecParser};
+				#[allow(unused_imports)]
+				use base64::{engine::general_purpose::STANDARD, Engine};
+				#[allow(unused_imports)]
+				use rlua::{Context, ExternalError, Result};
+				use parking_lot::Mutex;
+				use std::sync::Arc;
+				$(
+					pub(crate) fn $name($p: __lua!(@type $($pt)? | &Arc<Mutex<SpecParser>>), $ctx: __lua!(@type $($ct)? | Context), $arg: __lua!(@type $($at)? | String)) -> Result<__lua!(@type $($res)? | ())> $body
+				)+
+			}
+		)+
+		pub(crate) fn run(rpmparser: &Arc<Mutex<SpecParser>>, script: &str) -> Result<String> {
+			let lua = Lua::new();
+			let anda_out = Arc::new(Mutex::new(String::new()));
+			lua.context(|ctx| -> rlua::Result<()> {
+				let globals = ctx.globals();
+
+				$(
+					let $ext = ctx.create_table()?;
+					$({
+						let p = rpmparser.clone();
+						$ext.set(stringify!($name), ctx.create_function(move |ctx, arg| $ext::$name(&p, ctx, arg))?)?;
+					})+
+					globals.set(stringify!($ext), $ext)?;
+				)+
+
+				let anda_out = anda_out.clone();
+				globals.set(
+					"print",
+					ctx.create_function(move |_, s: String| {
+						anda_out.lock().push_str(&s);
+						Ok(())
+					})?,
+				)?;
+				ctx.load(script).exec()?;
+				Ok(())
+			})?;
+			Ok(Arc::try_unwrap(anda_out).expect("Cannot unwrap Arc for print() output in lua").into_inner())
+		}
+	};
 }
-pub(crate) fn b64encode(_: Context, arg: String) -> Result<String> {
-	Ok(STANDARD.encode(arg))
-}
-pub(crate) fn call(_: Context, _arg: String) -> Result<()> {
-	todo!()
-}
-pub(crate) fn define(rpmparser: &Arc<Mutex<SpecParser>>, _: Context, arg: String) -> Result<()> {
-	if let Some((name, def)) = arg.split_once(' ') {
-		let mut def: String = def.into();
-		let name: String = name.strip_suffix("()").map_or_else(
-			|| name.into(),
-			|name| {
-				def.push(' ');
-				name.into()
-			},
-		);
-		let mut p = rpmparser.lock();
-		p.macros.insert(name.into(), vec![(*def).into()]);
-		Ok(())
-	} else {
-		Err("Invalid syntax: `%define {def}`".to_lua_err())
-	}
-}
-pub(crate) fn execute(_: Context, args: Vec<String>) -> Result<i32> {
-	Ok(std::process::Command::new(&args[0]).args(&args[1..]).status().map_err(rlua::ExternalError::to_lua_err)?.code().unwrap_or(-1))
-}
-pub(crate) fn expand(rpmparser: &Arc<Mutex<SpecParser>>, _: Context, arg: &str) -> Result<String> {
-	let mut p = rpmparser.lock();
-	let mut out: smartstring::alias::String = Default::default();
-	p.parse_macro(&mut out, &mut arg.into()).map_err(|e| e.to_lua_err())?;
-	Ok(out.to_string())
-}
-pub(crate) fn interactive(_: Context, _: String) -> Result<()> {
-	repl(); // lazy
-		// todo mimic
-	Ok(())
-}
-pub(crate) fn isdefined(rpmparser: &Arc<Mutex<SpecParser>>, _: Context, name: &str) -> Result<(bool, bool)> {
-	if let Some(def) = rpmparser.lock().macros.get(name) {
-		if let Some(MacroType::Runtime { param, .. }) = def.last() {
-			return Ok((true, *param));
+
+__lua!(
+	mod rpm {
+		fn b64decode(_, _, arg): String {
+			String::from_utf8(STANDARD.decode(arg).map_err(ExternalError::to_lua_err)?).map_err(ExternalError::to_lua_err)
+		}
+		fn b64encode(_, _, arg): String {
+			Ok(STANDARD.encode(arg))
+		}
+		fn define(p, _, arg) {
+			if let Some((name, def)) = arg.split_once(' ') {
+				let mut def: String = def.into();
+				let name: String = name.strip_suffix("()").map_or_else(
+					|| name.into(),
+					|name| {
+						def.push(' ');
+						name.into()
+					},
+				);
+				p.lock().macros.insert(name.into(), vec![(*def).into()]);
+				Ok(())
+			} else {
+				Err("Invalid syntax: `%define {def}`".to_lua_err())
+			}
+		}
+		fn execute(_, _, args=>Vec<String>): i32 {
+			Ok(std::process::Command::new(&args[0]).args(&args[1..]).status().map_err(rlua::ExternalError::to_lua_err)?.code().unwrap_or(-1))
+		}
+		fn expand(p, _, arg): String {
+			let mut out: smartstring::alias::String = Default::default();
+			p.lock().parse_macro(&mut out, &mut (&*arg).into()).map_err(|e| e.to_lua_err())?;
+			Ok(out.to_string())
+		}
+		// glob(_, _, arg=>(String, Option<String>))
+		fn interactive(_, _, _=>()) {
+			super::repl::repl(); // lazy
+			// todo mimic
+			Ok(())
+		}
+		fn isdefined(p, _, name): (bool, bool) {
+			if let Some(def) = p.lock().macros.get(&*name) {
+				if let Some(MacroType::Runtime { param, .. }) = def.last() {
+					return Ok((true, *param));
+				}
+			}
+			Ok((false, false))
+		}
+		fn load(p, _, arg) {
+			p.lock().load_macro_from_file(&std::path::PathBuf::from(arg)).map_err(rlua::ExternalError::to_lua_err)
+		}
+		// todo rpm.fd
+		// * BEGIN: File operations
+		fn open(_, _, _=>(String, String)) {
+			todo!()
+		}
+		fn close(_, _, _=>()) {
+			todo!()
+		}
+		fn flush(_, _, _=>()) {
+			todo!()
+		}
+		fn read(_, _, _=>Option<usize>) {
+			todo!()
+		}
+		fn seek(_, _, _=>(String, usize)) {
+			todo!()
+		}
+		fn write(_, _, _=>(String, Option<usize>)) {
+			todo!()
+		}
+		fn reopen(_, _, _) {
+			todo!()
+		}
+		// ... END: File operations
+
+		fn redirect2null(_, _, _) {
+			todo!()
+		}
+		fn undefine(p, _, name) {
+			p.lock().macros.remove(&*name).ok_or_else(|| "error undefining macro".to_lua_err())?;
+			Ok(())
+		}
+		fn vercmp(_, _, vers=>(String, String)): i8 {
+			use crate::tools::expr::Version;
+			use std::str::FromStr;
+			let (v1, v2) = vers;
+			let (v1, v2) = (Version::from_str(&v1).map_err(ExternalError::to_lua_err)?, Version::from_str(&v2).map_err(ExternalError::to_lua_err)?);
+			Ok(if v1 == v2 { 0 } else if v1 < v2 { -1 } else { 1 })
 		}
 	}
-	Ok((false, false))
-}
-pub(crate) fn load(rpmparser: &Arc<Mutex<SpecParser>>, _: Context, arg: String) -> Result<()> {
-	rpmparser.lock().load_macro_from_file(&std::path::PathBuf::from(arg)).map_err(rlua::ExternalError::to_lua_err)
-}
-pub(crate) fn redirect2null(_: Context, _arg: i32) -> Result<()> {
-	todo!()
-}
-pub(crate) fn register(_: Context, _arg: String) -> Result<()> {
-	todo!()
-}
-pub(crate) fn undefine(rpmparser: &Arc<Mutex<SpecParser>>, _: Context, name: String) -> Result<()> {
-	rpmparser.lock().macros.remove(&*name).ok_or_else(|| "error undefining macro".to_lua_err())?;
-	Ok(())
-}
-pub(crate) fn unregister(_: Context, _arg: String) -> Result<()> {
-	todo!()
-}
-pub(crate) fn vercmp(_: Context, (_s1, _s2): (String, String)) -> Result<()> {
-	todo!()
-}
-pub(crate) fn run(rpmparser: &Arc<Mutex<SpecParser>>, script: &str) -> Result<String> {
-	let lua = Lua::new();
-	let anda_out = Arc::new(Mutex::new(String::new()));
-	lua.context(|ctx| -> rlua::Result<()> {
-		let rpm = ctx.create_table()?;
-		rpm.set("b64encode", ctx.create_function(b64encode)?)?;
-		rpm.set("b64decode", ctx.create_function(b64decode)?)?;
-		let p = rpmparser.clone();
-		rpm.set("expand", ctx.create_function(move |ctx, arg: String| expand(&p, ctx, &arg))?)?;
-		let p = rpmparser.clone();
-		rpm.set("define", ctx.create_function(move |ctx, arg| define(&p, ctx, arg))?)?;
-		let p = rpmparser.clone();
-		rpm.set("undefine", ctx.create_function(move |ctx, arg| undefine(&p, ctx, arg))?)?;
-		let p = rpmparser.clone();
-		rpm.set("isdefined", ctx.create_function(move |ctx, arg: String| isdefined(&p, ctx, &arg))?)?;
-		let p = rpmparser.clone();
-		rpm.set("load", ctx.create_function(move |ctx, arg| load(&p, ctx, arg))?)?;
-		rpm.set("register", ctx.create_function(register)?)?;
-		rpm.set("unregister", ctx.create_function(unregister)?)?;
-		rpm.set("call", ctx.create_function(call)?)?;
-		rpm.set("interactive", ctx.create_function(interactive)?)?;
-		rpm.set("execute", ctx.create_function(execute)?)?;
-		rpm.set("redirect2null", ctx.create_function(redirect2null)?)?;
-		rpm.set("vercmp", ctx.create_function(vercmp)?)?;
-		// rpm.set("ver", ctx.create_function(Self::ver_new)?)?;
-		// rpm.set("open", ctx.create_function(Self::open)?)?;
-		// rpm.set("splitargs", ctx.create_function(Self::splitargs)?)?;
-		// rpm.set("unsplitargs", ctx.create_function(Self::unsplitargs)?)?;
-
-		let globals = ctx.globals();
-		globals.set("rpm", rpm)?;
-		let anda_out = anda_out.clone();
-		globals.set(
-			"print",
-			ctx.create_function(move |_, s: String| {
-				anda_out.lock().push_str(&s);
-				Ok(())
-			})?,
-		)?;
-		ctx.load(script).exec()?;
-		Ok(())
-	})?;
-	Ok(Arc::try_unwrap(anda_out).expect("Cannot unwrap Arc for print() output in lua").into_inner())
-}
+	mod posix {
+		fn access(_, _, _=>(String, Option<String>)): bool {
+			todo!()
+		}
+		fn chdir(_, _, _) {
+			todo!()
+		}
+		fn chmod(_, _, _=>(String, String, String)) {
+			todo!()
+		}
+		fn chown(_, _, _=>(String, String, String)) {
+			todo!()
+		}
+		fn ctermid(_, _, _=>()): String {
+			todo!()
+		}
+		fn dir(_, _, _=>Option<String>): Vec<String> {
+			todo!()
+		}
+		fn errno(_, _, _=>()): (String, isize) {
+			todo!()
+		}
+		fn exec(_, _, _=>Vec<String>) {
+			todo!()
+		}
+		fn files(_, _, _=>Option<String>): Vec<String> {
+			todo!()
+		}
+		fn fork(_, _, _=>()): isize {
+			todo!()
+		}
+		fn getcwd(_, _, _=>()): String {
+			todo!()
+		}
+		fn getenv(_, _, _=>()): String {
+			todo!()
+		}
+		// getgroup() return type???
+		fn getlogin(_, _, _=>()): String {
+			todo!()
+		}
+		fn getpasswd(_, _, _=>Vec<String>): String {
+			todo!()
+		}
+		fn getprocessid(_, _, _): usize {
+			todo!()
+		}
+		fn kill(_, _, _=>(usize, Option<usize>)) {
+			todo!()
+		}
+		fn link(_, _, _=>(String, String)) {
+			todo!()
+		}
+		fn mkdir(_, _, _) {
+			todo!()
+		}
+		fn mkfifo(_, _, _) {
+			todo!()
+		}
+		// pathconf() return type???
+		fn putenv(_, _, _) {
+			todo!()
+		}
+		fn readlink(_, _, _): String {
+			todo!()
+		}
+		fn rmdir(_, _, _) {
+			todo!()
+		}
+		fn setgid(_, _, _) {
+			todo!()
+		}
+		fn setuid(_, _, _) {
+			todo!()
+		}
+		fn sleep(_, _, _=>usize) {
+			todo!()
+		}
+		// stat() return type???
+		fn symlink(_, _, _=>(String, String)) {
+			todo!()
+		}
+		// sysconf() return type???
+		// times() return type???
+		fn ttyname(_, _, _=>usize) {
+			todo!()
+		}
+		fn umask(_, _, _=>Option<String>): String {
+			todo!()
+		}
+		fn uname(_, _, _): String {
+			todo!()
+		}
+		fn utime(_, _, _=>(String, Option<usize>, Option<usize>)) {
+			todo!()
+		}
+		fn wait(_, _, _=>usize) {
+			todo!()
+		}
+		fn setenv(_, _, _=>(String, String, bool)) {
+			todo!()
+		}
+		fn unsetenv(_, _, _) {
+			todo!()
+		}
+	}
+);

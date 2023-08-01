@@ -2,12 +2,12 @@
 //!
 //! RPM expressions are expressions used in spec files with the `%[]` notation,
 //! composed of different operators and 3 data types: strings, integers and RPM versions.
-use std::sync::Arc;
-
-use chumsky::prelude::*;
-use smartstring::alias::String;
-
 use crate::{error::ParserError, parse::SpecParser, util::Consumer};
+use chumsky::prelude::*;
+use color_eyre::eyre::eyre;
+use smartstring::alias::String;
+use std::str::FromStr;
+use std::sync::Arc;
 
 /// Errors during parsing expressions
 #[derive(Debug, Clone)]
@@ -59,6 +59,40 @@ impl std::fmt::Display for Version {
 			f.write_fmt(format_args!("-{r}"))?;
 		}
 		Ok(())
+	}
+}
+
+impl FromStr for Version {
+	type Err = ParserError;
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		let mut evr = Self::default();
+		let mut last = String::new();
+		for ch in s.chars() {
+			if ch == ':' {
+				match last.parse() {
+					Ok(e) => evr.epoch = e,
+					Err(e) => return Err(eyre!("Cannot parse epoch: {e:#}").into()),
+				}
+				last.clear();
+				continue;
+			}
+			if ch == '-' {
+				if !evr.ver.is_empty() {
+					return Err(eyre!("Unexpected double `-` in version: `{}-{last:?}-`", evr.ver).into());
+				}
+				evr.ver = std::mem::take(&mut last);
+			}
+			if !ch.is_ascii_alphanumeric() && !"^~.".contains(ch) {
+				return Err(eyre!("Unexpected character `{ch}` in evr").into());
+			}
+			last.push(ch);
+		}
+		if evr.ver.is_empty() {
+			evr.ver = last;
+		} else {
+			evr.rel = Some(last);
+		}
+		Ok(evr)
 	}
 }
 
@@ -161,35 +195,7 @@ impl Expr {
 				.then_ignore(just('"'))
 				.collect::<Vec<_>>()
 				.try_map(|v, span| {
-					let mut evr = Version::default();
-					let mut last = String::new();
-					for ch in &v {
-						let ch = *ch;
-						if ch == ':' {
-							match last.parse() {
-								Ok(e) => evr.epoch = e,
-								Err(e) => return Err(Simple::custom(span, format!("Cannot parse epoch: {e:#}"))),
-							}
-							last.clear();
-							continue;
-						}
-						if ch == '-' {
-							if !evr.ver.is_empty() {
-								return Err(Simple::custom(span, format!("Unexpected double `-` in version: {v:?}")));
-							}
-							evr.ver = std::mem::take(&mut last);
-						}
-						if !ch.is_ascii_alphanumeric() && !"^~.".contains(ch) {
-							return Err(Simple::custom(span, format!("Unexpected character `{ch}` in evr")));
-						}
-						last.push(ch);
-					}
-					if evr.ver.is_empty() {
-						evr.ver = last;
-					} else {
-						evr.rel = Some(last);
-					}
-					Ok(Expr::Out(Expression::Ver(evr)))
+					Ok(Expr::Out(Expression::Ver(Version::from_str(&v.into_iter().collect::<String>()).map_err(|e| Simple::custom(span, format!("Error when parsing version: {e:?}")))?)))
 				})
 				.padded();
 
