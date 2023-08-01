@@ -1881,7 +1881,7 @@ impl SpecParser {
 						if !quotes.is_empty() {
 							continue;
 						}
-						return self.parse_expr(out, &mut chars.range(start..chars.pos).expect("Cannot unwind consumer to `%[...]`"));
+						return self.parse_expr(out, &mut chars.range(start..chars.pos-1).expect("Cannot unwind consumer to `%[...]`"));
 					}
 					return Err(eyre!("EOF but `%[...` is not ended with `]`").into());
 				}
@@ -2036,5 +2036,13 @@ mod tests {
 		let _ = Package::add_simple_query(&mut pkgs, "bad!").unwrap_err();
 		let _ = Package::add_simple_query(&mut pkgs, "also(bad").unwrap_err();
 		let _ = Package::add_simple_query(&mut pkgs, "not-good >= 1.0").unwrap_err();
+	}
+	#[test]
+	fn expression() {
+		let mut p = super::SpecParser::new();
+		let out = &mut String::new();
+		p.macros.insert("hai".into(), vec![MacroType::Runtime { s: Arc::new(Mutex::new("0".into())), file: Arc::from(Path::new("<?>")), offset: 0, param: true, len: 1 }]);
+		p.parse_macro(out, &mut "%[1 + 2 * (3+4) - %hai]".into()).unwrap();
+		assert_eq!(out, "15");
 	}
 }
