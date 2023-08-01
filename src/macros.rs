@@ -1,7 +1,7 @@
 //! Macros in RPM
-//! 
+//!
 //! <https://rpm-software-management.github.io/rpm/manual/macros.html>
-use crate::{error::ParserError as PE, parse::SpecParser, util::Consumer};
+use crate::{error::Err as PE, parse::SpecParser, util::Consumer};
 use color_eyre::eyre::eyre;
 use parking_lot::Mutex;
 use smartstring::alias::String;
@@ -12,9 +12,11 @@ use std::{
 	sync::Arc,
 };
 
+type InternalMacroFn = fn(&mut SpecParser, &mut String, &mut Consumer<dyn Read + '_>) -> Result<(), PE>;
+
 #[derive(Clone)]
 pub enum MacroType {
-	Internal(fn(&mut SpecParser, &mut String, &mut Consumer<dyn Read + '_>) -> Result<(), PE>),
+	Internal(InternalMacroFn),
 	Runtime { file: Arc<Path>, offset: usize, len: usize, s: Arc<Mutex<String>>, param: bool },
 }
 
@@ -22,7 +24,7 @@ impl std::fmt::Debug for MacroType {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
 			Self::Internal(_) => f.write_str("<builtin>")?,
-			Self::Runtime { offset, len, s, .. } => f.write_str(&s.lock()[*offset..*&(offset + len)])?,
+			Self::Runtime { offset, len, s, .. } => f.write_str(&s.lock()[*offset..offset + len])?,
 		}
 		Ok(())
 	}
@@ -37,7 +39,7 @@ impl From<&str> for MacroType {
 macro_rules! __internal_macros {
 	($(macro $m:ident($p:pat, $o:pat, $r:pat) $body:block )+) => {
 		$(
-			#[allow(non_snake_case)]
+			#[allow(non_snake_case, clippy::unnecessary_wraps)]
 			fn $m($p: &mut SpecParser, $o: &mut String, $r: &mut Consumer<dyn Read + '_>) -> Result<(), PE> $body
 		)+
 		lazy_static::lazy_static! {
@@ -72,7 +74,7 @@ __internal_macros!(
 		let def = def.trim();
 		let (name, param): (String, bool) = name.strip_suffix("()").map_or_else(|| (name.into(), false), |x| (x.into(), true));
 		let csm = r.range(pos + 1 + name.len()..r.pos).ok_or_else(|| eyre!("%define: cannot unwind Consumer"))?;
-		p.define_macro(name, csm, param, def.len());
+		p.define_macro(name, &csm, param, def.len());
 		Ok(())
 	}
 	macro global(p, o, r) {
@@ -84,7 +86,7 @@ __internal_macros!(
 	}
 	macro load(p, _, r) {
 		let f: String = r.collect();
-		p.load_macro_from_file(&std::path::Path::new(&*f))?;
+		p.load_macro_from_file(std::path::Path::new(&*f))?;
 		Ok(())
 	}
 	macro expand(p, o, r) {
@@ -102,8 +104,8 @@ __internal_macros!(
 		// This is a valid downcast because `new_reader.r` is `None` given
 		// that it is created from `Consumer::range()`. Therefore, changing
 		// `<R>` to anything should not affect the actual reader.
-		let mut new_reader = *unsafe { Box::from_raw(Box::into_raw(Box::new(new_reader)) as *mut Consumer<std::fs::File>) };
-		p.parse_macro(o, &mut new_reader)?;
+		let mut new_reader = *unsafe { Box::from_raw(Box::into_raw(Box::new(new_reader)).cast()) };
+		p.parse_macro::<std::fs::File>(o, &mut new_reader)?;
 		// r.pos = new_reader.pos;
 		Ok(())
 	}
@@ -137,7 +139,7 @@ __internal_macros!(
 				csm.pos = *offset;
 				csm.end = *offset + len;
 				o.push_str(&csm.collect::<String>());
-			}
+			},
 		}
 		Ok(())
 	}
@@ -165,7 +167,7 @@ __internal_macros!(
 	macro reverse(_, o, r) {
 		let mut chs = r.collect::<Box<[char]>>();
 		chs.reverse();
-		chs.into_iter().for_each(|ch| o.push(*ch));
+		chs.iter().for_each(|ch| o.push(*ch));
 		Ok(())
 	}
 	// macro sub(p, o, r) {
@@ -190,7 +192,7 @@ __internal_macros!(
 		Ok(())
 	}
 	macro shrink(_, o, r) {
-		while let Some(ch) = r.next() {
+		for ch in r.by_ref() {
 			if !ch.is_whitespace() {
 				o.push(ch);
 				break;
@@ -249,9 +251,9 @@ __internal_macros!(
 		url2path(p, o, r)
 	}
 	macro uncompress(_, o, r) {
+		use crate::tools::uncompress::CmprxFmt;
 		//? https://github.com/rpm-software-management/rpm/blob/master/tools/rpmuncompress.c#L69
 		let path: String = r.collect();
-		use crate::tools::uncompress::CmprxFmt;
 		o.push_str(match CmprxFmt::try_from(Path::new(&*path)) {
 			Ok(CmprxFmt::Nil) => "cat ",
 			Ok(CmprxFmt::Other) => "gzip -dc ",
@@ -288,7 +290,7 @@ __internal_macros!(
 		let name: String = r.collect();
 		match std::env::var(&*name) {
 			Ok(x) => o.push_str(&x),
-			Err(std::env::VarError::NotPresent) => {}
+			Err(std::env::VarError::NotPresent) => {},
 			Err(std::env::VarError::NotUnicode(s)) => return Err(eyre!("%{{getenv:{name}}} failed: Non-unicode OsString {s:?}").into()),
 		}
 		Ok(())
@@ -330,7 +332,7 @@ __internal_macros!(
 	// }
 	macro dump(p, _, r) {
 		let args = r.collect::<String>();
-		if args.len() != 0 {
+		if !args.is_empty() {
 			tracing::warn!(?args, "Unexpected arguments to %dump");
 		}
 		let mut stdout = std::io::stdout().lock();

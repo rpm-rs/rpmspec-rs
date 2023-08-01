@@ -2,7 +2,7 @@
 //!
 //! RPM expressions are expressions used in spec files with the `%[]` notation,
 //! composed of different operators and 3 data types: strings, integers and RPM versions.
-use crate::{error::ParserError, parse::SpecParser, util::Consumer};
+use crate::{error::Err as PE, parse::SpecParser, util::Consumer};
 use chumsky::prelude::*;
 use color_eyre::eyre::eyre;
 use smartstring::alias::String;
@@ -10,31 +10,43 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 /// Errors during parsing expressions
-#[derive(Debug, Clone)]
-pub enum ExprErr {
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum Err {
 	/// Cannot perform this operation with a number
-	NotNum(Expression),
+	#[error("Cannot perform this operation with a number: {0:#}")]
+	NotNum(Box<Expression>),
 	/// Cannot perform addition with this kind of expression
-	NoAdd(Expression),
+	#[error("Cannot perform addition with this kind of expression: {0:#}")]
+	NoAdd(Box<Expression>),
 	/// Cannot perform multiplication and division this kind of expression
-	NoMulDiv(Expression),
+	#[error("Cannot perform multiplication and division this kind of expression: {0:#}")]
+	NoMulDiv(Box<Expression>),
 	/// The types of the 2 expressions do not match
-	TypeMismatch(Expression, Expression),
+	#[error("The types of the 2 expressions do not match: `{0:#}` and `{1:#}`")]
+	TypeMismatch(Box<Expression>, Box<Expression>),
 	/// Error when parsing macros
-	MacroErr(Box<crate::error::ParserError>),
+	#[error("In `%[expr]`, found macro expansion error: {0:#}")]
+	MacroErr(Box<crate::error::Err>),
 	/// Error when parsing %[] from Chumsky
+	#[error("Cannot parse expression: {0:?}")]
 	BadExprParse(Box<[Simple<char>]>),
 }
 
-impl From<ParserError> for ExprErr {
-	fn from(value: ParserError) -> Self {
+impl From<crate::error::Err> for Err {
+	fn from(value: PE) -> Self {
 		Self::MacroErr(Box::new(value))
 	}
 }
 
-impl From<Vec<Simple<char>>> for ExprErr {
+impl From<Vec<Simple<char>>> for Err {
 	fn from(value: Vec<Simple<char>>) -> Self {
 		Self::BadExprParse(value.into_boxed_slice())
+	}
+}
+
+impl From<color_eyre::Report> for Err {
+	fn from(value: color_eyre::Report) -> Self {
+		Self::from(crate::error::Err::from(value))
 	}
 }
 
@@ -63,7 +75,7 @@ impl std::fmt::Display for Version {
 }
 
 impl FromStr for Version {
-	type Err = ParserError;
+	type Err = Err;
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
 		let mut evr = Self::default();
 		let mut last = String::new();
@@ -106,6 +118,78 @@ pub enum Expression {
 	/// RPM [`Version`]
 	Ver(Version),
 }
+
+/*
+impl Expression {
+	/// Returns `true` if the expression is [`Num`].
+	///
+	/// [`Num`]: Expression::Num
+	#[must_use]
+	pub const fn is_num(&self) -> bool {
+		matches!(self, Self::Num(..))
+	}
+
+	/// Returns `true` if the expression is [`Text`].
+	///
+	/// [`Text`]: Expression::Text
+	#[must_use]
+	pub const fn is_text(&self) -> bool {
+		matches!(self, Self::Text(..))
+	}
+
+	/// Returns `true` if the expression is [`Ver`].
+	///
+	/// [`Ver`]: Expression::Ver
+	#[must_use]
+	pub const fn is_ver(&self) -> bool {
+		matches!(self, Self::Ver(..))
+	}
+
+	/// Returns the inner value of [`Num`].
+	///
+	/// # Errors
+	/// The expression is not of item [`Num`].
+	///
+	/// [`Num`]: Expression::Num
+	pub fn try_into_num(self) -> Result<i64, Self> {
+		if let Self::Num(v) = self {
+			Ok(v)
+		} else {
+			Err(self)
+		}
+	}
+
+	/// Returns the inner value of [`Text`].
+	///
+	/// # Errors
+	/// The expression is not of item [`Text`].
+	///
+	/// [`Text`]: Expression::Text
+	#[must_use]
+	pub const fn as_text(&self) -> Option<&String> {
+		if let Self::Text(v) = self {
+			Some(v)
+		} else {
+			None
+		}
+	}
+
+	/// Returns the inner value of [`Ver`].
+	///
+	/// # Errors
+	/// The expression is not of item [`Ver`].
+	///
+	/// [`Ver`]: Expression::Ver
+	#[must_use]
+	pub const fn as_ver(&self) -> Option<&Version> {
+		if let Self::Ver(v) = self {
+			Some(v)
+		} else {
+			None
+		}
+	}
+}
+*/
 
 impl std::fmt::Display for Expression {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -162,20 +246,90 @@ pub enum Expr {
 	Ter(Box<Expr>, Box<Expr>, Box<Expr>),
 }
 
+#[rustfmt::skip]
+macro_rules! gen_chk {
+	($dollar:tt, $sp:ident) => {
+		macro_rules! typed_chk {
+			($a:ident:$l:ident $b:ident:$r:ident => $e:expr) => {{
+				let $a = $a.eval($sp)?;
+				Ok(match $a {
+					Expression::Ver($l) => {
+						let $b = $b.eval($sp)?;
+						let Expression::Ver($r) = $b else {
+							return Err(Err::TypeMismatch(Box::new(Expression::Ver($l)), Box::new($b)));
+						};
+						Expression::Num(i64::from($e))
+					}
+					Expression::Num($l) => {
+						let $b = $b.eval($sp)?;
+						let Expression::Num($r) = $b else {
+							return Err(Err::TypeMismatch(Box::new($a), Box::new($b)));
+						};
+						Expression::Num(i64::from($e))
+					}
+					Expression::Text($l) => {
+						let $b = $b.eval($sp)?;
+						let Expression::Text($r) = $b else {
+							return Err(Err::TypeMismatch(Box::new(Expression::Text($l)), Box::new($b)));
+						};
+						Expression::Num(i64::from($e))
+					}
+				})
+			}};
+		}
+		macro_rules! eval_type_chk {
+			($a:ident, $b:ident) => {
+				let $a = $a.eval($sp)?;
+				let $b = $b.eval($sp)?;
+				match $a {
+					Expression::Num(_) => {
+						let Expression::Num(_) = $b else {
+							return Err(Err::TypeMismatch(Box::new($a), Box::new($b)));
+						};
+					}
+					Expression::Text(_) => {
+						let Expression::Text(_) = $b else {
+							return Err(Err::TypeMismatch(Box::new($a), Box::new($b)));
+						};
+					}
+					Expression::Ver(_) => {
+						let Expression::Ver(_) = $b else {
+							return Err(Err::TypeMismatch(Box::new($a), Box::new($b)));
+						};
+					}
+				}
+			};
+		}
+		macro_rules! give {
+			(@else) => { unreachable!() };
+			(@else $et:ident : $dollar($e:expr),+) => {
+				return Err(Err::$et($dollar(Box::new($e)),+));
+			};
+			($t:ident($x:ident) = $y:ident $dollar(else $et:ident : $dollar($e:expr),+)?) => {
+				let Expression::$t($x) = $y else {
+					give!(@else $dollar($et : $dollar($e),+)?);
+				};
+			};
+		}
+	};
+}
+
 impl Expr {
 	/// Returns a parser than can take in a &str and returns [`Expr`].
 	///
-	///
 	/// # Examples
-	///
 	/// ```
 	/// use rpmspec_rs::tools::expr::Expr;
 	///
 	/// assert_eq!(Expr::parser().parse("1 + 1").and_then(|x| x.eval()), Ok(2));
 	/// ```
-	pub fn parser() -> impl Parser<char, Expr, Error = Simple<char>> {
+	///
+	/// # Panics
+	/// - Cannot parse identified integers (0% chance of happening)
+	#[must_use]
+	pub fn parser() -> impl Parser<char, Self, Error = Simple<char>> {
 		recursive(|expr| {
-			let n = text::int(10).map(|s: std::string::String| Expr::Out(Expression::Num(s.parse().unwrap()))).padded();
+			let n = text::int(10).map(|s: std::string::String| Self::Out(Expression::Num(s.parse().unwrap()))).padded();
 			let atom = n.or(expr.delimited_by(just('('), just(')')));
 			let op = |c| just(c).padded();
 
@@ -186,7 +340,7 @@ impl Expr {
 				.map(|v| {
 					let mut s = String::new();
 					v.into_iter().for_each(|c| s.push(c));
-					Expr::Out(Expression::Text(s))
+					Self::Out(Expression::Text(s))
 				})
 				.padded();
 
@@ -195,7 +349,7 @@ impl Expr {
 				.then_ignore(just('"'))
 				.collect::<Vec<_>>()
 				.try_map(|v, span| {
-					Ok(Expr::Out(Expression::Ver(Version::from_str(&v.into_iter().collect::<String>()).map_err(|e| Simple::custom(span, format!("Error when parsing version: {e:?}")))?)))
+					Ok(Self::Out(Expression::Ver(Version::from_str(&v.into_iter().collect::<String>()).map_err(|e| Simple::custom(span, format!("Error when parsing version: {e:?}")))?)))
 				})
 				.padded();
 
@@ -210,7 +364,7 @@ impl Expr {
 
 			let atom = atom.or(macros);
 
-			let unary = op('-').repeated().then(atom.clone()).foldr(|_, r| Expr::Neg(Box::new(r))).or(op('!').repeated().then(atom).foldr(|_, r| Expr::Not(Box::new(r))));
+			let unary = op('-').repeated().then(atom.clone()).foldr(|_, r| Self::Neg(Box::new(r))).or(op('!').repeated().then(atom).foldr(|_, r| Self::Not(Box::new(r))));
 			let muldiv = unary.clone().then(op('*').to(Expr::Mul as fn(_, _) -> _).or(op('/').to(Expr::Div as fn(_, _) -> _)).then(unary).repeated()).foldl(|l, (op, r)| op(Box::new(l), Box::new(r)));
 			let addsub =
 				muldiv.clone().then(op('+').to(Expr::Add as fn(_, _) -> _).or(op('-').to(Expr::Sub as fn(_, _) -> _)).then(muldiv).repeated()).foldl(|l, (op, r)| op(Box::new(l), Box::new(r)));
@@ -238,79 +392,28 @@ impl Expr {
 	/// let expr = Expr::Out(Expression::Text("hai"));
 	/// assert_eq!(expr.eval(), Ok(Expression::Text("hai")));
 	/// ```
-	pub fn eval(self, sp: &mut SpecParser) -> Result<Expression, ExprErr> {
-		#[rustfmt::skip]
-		macro_rules! typed_chk {
-			($a:ident:$l:ident $b:ident:$r:ident => $e:expr) => {{
-				let $a = $a.eval(sp)?;
-				Ok(match $a {
-					Expression::Ver($l) => {
-						let $b = $b.eval(sp)?;
-						let Expression::Ver($r) = $b else {
-							return Err(ExprErr::TypeMismatch(Expression::Ver($l), $b));
-						};
-						Expression::Num(i64::from($e))
-					}
-					Expression::Num($l) => {
-						let $b = $b.eval(sp)?;
-						let Expression::Num($r) = $b else {
-							return Err(ExprErr::TypeMismatch($a, $b));
-						};
-						Expression::Num(i64::from($e))
-					}
-					Expression::Text($l) => {
-						let $b = $b.eval(sp)?;
-						let Expression::Text($r) = $b else {
-							return Err(ExprErr::TypeMismatch(Expression::Text($l), $b));
-						};
-						Expression::Num(i64::from($e))
-					}
-				})
-			}};
-		}
-		#[rustfmt::skip]
-		macro_rules! eval_type_chk {
-			($a:ident, $b:ident) => {
-				let $a = $a.eval(sp)?;
-				let $b = $b.eval(sp)?;
-				match $a {
-					Expression::Num(_) => {
-						let Expression::Num(_) = $b else {
-							return Err(ExprErr::TypeMismatch($a, $b));
-						};
-					}
-					Expression::Text(_) => {
-						let Expression::Text(_) = $b else {
-							return Err(ExprErr::TypeMismatch($a, $b));
-						};
-					}
-					Expression::Ver(_) => {
-						let Expression::Ver(_) = $b else {
-							return Err(ExprErr::TypeMismatch($a, $b));
-						};
-					}
-				}
-			};
-		}
+	///
+	/// # Errors
+	/// Invalid expression
+	#[allow(clippy::cognitive_complexity)] // weird to split it apart
+	pub fn eval(self, sp: &mut SpecParser) -> Result<Expression, Err> {
+		gen_chk!($, sp);
 		match self {
 			Self::Out(expr) => Ok(expr),
 			Self::Macro(m) => {
 				let mut out = String::new();
 				// any type will do
-				let mut csm: Consumer<std::fs::File> = Consumer::new(Arc::new(parking_lot::Mutex::new(m)), None, Arc::from(std::path::Path::new("<expr>")));
-				sp._use_raw_macro(&mut out, &mut csm)?;
+				sp._use_raw_macro::<std::fs::File>(&mut out, &mut Consumer::new(Arc::new(parking_lot::Mutex::new(m)), None, Arc::from(std::path::Path::new("<expr>"))))?;
 				match Self::parser().parse(&*out)? {
 					Self::Out(x) => Ok(x),
-					_ => Err(ExprErr::MacroErr(Box::new(ParserError::Others(color_eyre::eyre::eyre!("Bad Expression: `{out}`"))))),
+					_ => Err(eyre!("Bad Expression: `{out}`").into()),
 				}
-			}
+			},
 			Self::Neg(num) => {
 				let num = num.eval(sp)?;
-				let Expression::Num(n) = num else {
-					return Err(ExprErr::NotNum(num));
-				};
-				return Ok(Expression::Num(-n));
-			}
+				give!(Num(n) = num else NotNum: num);
+				Ok(Expression::Num(-n))
+			},
 			Self::Not(num) => Ok(Expression::Num(match num.eval(sp)? {
 				Expression::Ver(_) => 1,
 				Expression::Num(n) => i64::from(n == 0),
@@ -321,21 +424,21 @@ impl Expr {
 				Ok(match a {
 					Expression::Ver(_) => a,
 					Expression::Num(l) => {
-						let Expression::Num(r) = b else { unreachable!() };
+						give!(Num(r) = b);
 						Expression::Num(if l != 0 && r != 0 { r } else { 0 })
-					}
+					},
 					Expression::Text(l) => {
-						let Expression::Text(r) = b else { unreachable!() };
+						give!(Text(r) = b);
 						Expression::Text(if !l.is_empty() && !r.is_empty() { r } else { "".into() })
-					}
+					},
 				})
-			}
+			},
 			Self::Or(a, b) => {
 				eval_type_chk!(a, b);
 				Ok(match a {
 					Expression::Ver(_) => b,
 					Expression::Num(l) => {
-						let Expression::Num(r) = b else { unreachable!() };
+						give!(Num(r) = b);
 						Expression::Num(if l != 0 {
 							l
 						} else if r != 0 {
@@ -343,9 +446,9 @@ impl Expr {
 						} else {
 							0
 						})
-					}
+					},
 					Expression::Text(l) => {
-						let Expression::Text(r) = b else { unreachable!() };
+						give!(Text(r) = b);
 						Expression::Text(if !l.is_empty() {
 							l
 						} else if !r.is_empty() {
@@ -353,9 +456,9 @@ impl Expr {
 						} else {
 							"".into()
 						})
-					}
+					},
 				})
-			}
+			},
 			Self::Ne(a, b) => typed_chk!(a:l b:r => l != r),
 			Self::Eq(a, b) => typed_chk!(a:l b:r => l == r),
 			Self::Lt(a, b) => typed_chk!(a:l b:r => l < r),
@@ -363,74 +466,37 @@ impl Expr {
 			Self::Le(a, b) => typed_chk!(a:l b:r => l <= r),
 			Self::Ge(a, b) => typed_chk!(a:l b:r => l >= r),
 			Self::Add(a, b) => {
-				let a = a.eval(sp)?;
-				let b = b.eval(sp)?;
+				eval_type_chk!(a, b);
 				if let Expression::Num(l) = a {
-					let Expression::Num(r) = b else {
-						return Err(ExprErr::TypeMismatch(a, b));
-					};
-					Ok(Expression::Num(l + r))
-				} else if let Expression::Text(l) = a {
-					let Expression::Text(r) = b else {
-						return Err(ExprErr::TypeMismatch(Expression::Text(l), b));
-					};
-					Ok(Expression::Text(format!("{l}{r}").into()))
-				} else {
-					Err(ExprErr::NoAdd(a))
+					give!(Num(r) = b);
+					return Ok(Expression::Num(l + r));
 				}
-			}
-			Self::Sub(a, b) => Expr::Add(a, Box::new(Expr::Neg(b))).eval(sp),
+				let Expression::Text(l) = a else { return Err(Err::NoAdd(Box::new(a))) };
+				give!(Text(r) = b);
+				Ok(Expression::Text(format!("{l}{r}").into()))
+			},
+			Self::Sub(a, b) => Self::Add(a, Box::new(Self::Neg(b))).eval(sp),
 			Self::Div(a, b) => {
-				let a = a.eval(sp)?;
-				let b = b.eval(sp)?;
-				if let Expression::Num(l) = a {
-					let Expression::Num(r) = b else {
-						return Err(ExprErr::TypeMismatch(a, b));
-					};
-					Ok(Expression::Num(l / r))
-				} else {
-					Err(ExprErr::NoMulDiv(a))
-				}
-			}
+				eval_type_chk!(a, b);
+				give!(Num(l) = a else NoMulDiv: a);
+				give!(Num(r) = b);
+				Ok(Expression::Num(l / r))
+			},
 			Self::Mul(a, b) => {
-				let a = a.eval(sp)?;
-				let b = b.eval(sp)?;
-				if let Expression::Num(l) = a {
-					let Expression::Num(r) = b else {
-						return Err(ExprErr::TypeMismatch(a, b));
-					};
-					Ok(Expression::Num(l * r))
-				} else {
-					Err(ExprErr::NoMulDiv(a))
-				}
-			}
+				eval_type_chk!(a, b);
+				give!(Num(l) = a else NoMulDiv: a);
+				give!(Num(r) = b);
+				Ok(Expression::Num(l * r))
+			},
 			Self::Ter(cond, yes, no) => {
 				let cond = match cond.eval(sp)? {
 					Expression::Num(n) => n != 0,
 					Expression::Text(s) => !s.is_empty(),
 					Expression::Ver(_) => false,
 				};
-				let yes = yes.eval(sp)?;
-				let no = no.eval(sp)?;
-				match yes {
-					Expression::Num(_) => {
-						if !matches!(no, Expression::Num(_)) {
-							return Err(ExprErr::TypeMismatch(yes, no));
-						}
-					}
-					Expression::Text(_) => {
-						if !matches!(no, Expression::Text(_)) {
-							return Err(ExprErr::TypeMismatch(yes, no));
-						}
-					}
-					Expression::Ver(_) => {
-						if !matches!(no, Expression::Ver(_)) {
-							return Err(ExprErr::TypeMismatch(yes, no));
-						}
-					}
-				}
+				eval_type_chk!(yes, no);
 				Ok(if cond { yes } else { no })
-			}
+			},
 		}
 	}
 }

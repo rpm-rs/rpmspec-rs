@@ -7,7 +7,7 @@ use thiserror::Error;
 /// Errors for some special parsing issues
 #[derive(Debug, Error)]
 #[allow(clippy::module_name_repetitions)]
-pub enum ParserError {
+pub enum Err {
 	/// The preamble specified is invalid.
 	#[error("Preamble not supported")]
 	UnknownPreamble(usize, String),
@@ -28,43 +28,43 @@ pub enum ParserError {
 	MacroUndefined(String),
 	/// Bad Expresssion `%[]`
 	#[error("Bad RPM Expression: {0:#?}")]
-	BadExpression(crate::tools::expr::ExprErr),
+	BadExpression(crate::tools::expr::Err),
 	/// A color_eyre::Report. Some sort of syntax error.
 	#[error("{0:#}")]
 	Others(color_eyre::Report),
 }
 
-impl From<color_eyre::Report> for ParserError {
+impl From<color_eyre::Report> for Err {
 	fn from(value: color_eyre::Report) -> Self {
 		Self::Others(value)
 	}
 }
 
-impl From<rlua::Error> for ParserError {
+impl From<rlua::Error> for Err {
 	fn from(value: rlua::Error) -> Self {
 		Self::Others(color_eyre::eyre::eyre!(value))
 	}
 }
 
-impl From<std::io::Error> for ParserError {
+impl From<std::io::Error> for Err {
 	fn from(value: std::io::Error) -> Self {
 		Self::Others(color_eyre::eyre::eyre!(value))
 	}
 }
 
-impl From<crate::tools::expr::ExprErr> for ParserError {
-	fn from(value: crate::tools::expr::ExprErr) -> Self {
+impl From<crate::tools::expr::Err> for Err {
+	fn from(value: crate::tools::expr::Err) -> Self {
 		Self::BadExpression(value)
 	}
 }
 
-impl From<Vec<chumsky::error::Simple<char>>> for ParserError {
+impl From<Vec<chumsky::error::Simple<char>>> for Err {
 	fn from(value: Vec<chumsky::error::Simple<char>>) -> Self {
-		Self::BadExpression(crate::tools::expr::ExprErr::BadExprParse(value.into_boxed_slice()))
+		Self::BadExpression(crate::tools::expr::Err::BadExprParse(value.into_boxed_slice()))
 	}
 }
 
-impl Clone for ParserError {
+impl Clone for Err {
 	fn clone(&self) -> Self {
 		match self {
 			Self::BadPkgQCond(cond) => Self::BadPkgQCond(cond.clone()),
@@ -77,7 +77,7 @@ impl Clone for ParserError {
 			Self::Others(r) => {
 				tracing::warn!("Cloning ParserError::Others(color_eyre::Report):\n{r:#}");
 				Self::Others(color_eyre::eyre::eyre!(r.to_string()))
-			}
+			},
 		}
 	}
 }

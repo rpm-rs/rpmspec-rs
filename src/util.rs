@@ -73,7 +73,7 @@ impl<R: Read + ?Sized> Consumer<R> {
 		Self { end: 0, s, r, pos: 0, file }
 	}
 	#[must_use]
-	pub fn range(&mut self, r: std::ops::Range<usize>) -> Option<Consumer<R>> {
+	pub fn range(&mut self, r: std::ops::Range<usize>) -> Option<Self> {
 		let cur = self.pos;
 		while self.s.lock().len() < r.end {
 			self.next()?;
@@ -96,11 +96,11 @@ impl<R: Read + ?Sized> Consumer<R> {
 						Some(x) => {
 							error!("Found `{}` before closing `{x}`", $end);
 							return None;
-						}
+						},
 						None => {
 							error!("Unexpected closing char: `{}`", $end);
 							return None;
-						}
+						},
 					}
 				}
 			};
@@ -174,14 +174,15 @@ impl<R: ?Sized + Read> Iterator for Consumer<R> {
 		}
 		s.push_str(core::str::from_utf8(&buf[..nbyte]).map_err(|e| color_eyre::eyre::eyre!("cannot parse buffer `{buf:?}`: {e}")).ok()?);
 		let Some(c) = s.chars().nth(self.pos) else { panic!("Consumer has no `s[{}]` after reading from `r`, where `s` is: {s}", self.pos) };
+		drop(s);
 		self.pos += 1;
-		return Some(c);
+		Some(c)
 	}
 }
 
 impl From<&str> for Consumer {
 	fn from(s: &str) -> Self {
-		Consumer::new(Arc::from(Mutex::new(s.into())), None, Arc::from(Path::new("<?>")))
+		Self::new(Arc::from(Mutex::new(s.into())), None, Arc::from(Path::new("<?>")))
 	}
 }
 
@@ -214,7 +215,7 @@ pub mod textproc {
 				'(' if ch != ')' => return Err(eyre!("Expected `)`, Found `{ch}` before closing `(`")),
 				'[' if ch != ']' => return Err(eyre!("Expected `]`, Found `{ch}` before closing `['")),
 				'{' if ch != '}' => return Err(eyre!("Expected `}}`, Found `{ch}` before closing `{{`")),
-				_ => {}
+				_ => {},
 			}
 		}
 		Ok(())
@@ -242,7 +243,7 @@ pub mod textproc {
 			'(' if quotes.pop() != Some('(') => return Err(eyre!("BUG: pushing back `(` failed quotes check")),
 			'[' if quotes.pop() != Some('[') => return Err(eyre!("BUG: pushing back `[` failed quotes check")),
 			'{' if quotes.pop() != Some('{') => return Err(eyre!("BUG: pushing back `{{` failed quotes check")),
-			_ => {}
+			_ => {},
 		}
 		reader.back();
 		Ok(())

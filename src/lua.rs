@@ -8,7 +8,7 @@
 //! aka. `rlua::UserData` \
 //! there are two things: `rpm` and `posix`. See more information:
 //! <https://rpm-software-management.github.io/rpm/manual/lua.html>
-#![allow(clippy::unnecessary_wraps, clippy::needless_pass_by_value)]
+// #![allow(clippy::unnecessary_wraps, clippy::needless_pass_by_value)]
 use crate::parse::SpecParser;
 use parking_lot::Mutex;
 use rlua::{Lua, Result};
@@ -16,12 +16,8 @@ use std::sync::Arc;
 mod repl;
 
 macro_rules! __lua {
-	(@type $t:ty | $default:ty) => {
-		$t
-	};
-	(@type | $default:ty) => {
-		$default
-	};
+	(@type $t:ty | $default:ty) => { $t };
+	(@type | $default:ty) => { $default };
 	($(mod $ext:ident{$(fn $name:ident($p:pat$(=>$pt:ty)?, $ctx:pat$(=>$ct:ty)?, $arg:pat$(=>$at:ty)?)$(: $res:ty)? $body:block)+})+) => {
 		$(
 			mod $ext {
@@ -34,7 +30,12 @@ macro_rules! __lua {
 				use parking_lot::Mutex;
 				use std::sync::Arc;
 				$(
-					pub(crate) fn $name($p: __lua!(@type $($pt)? | &Arc<Mutex<SpecParser>>), $ctx: __lua!(@type $($ct)? | Context), $arg: __lua!(@type $($at)? | String)) -> Result<__lua!(@type $($res)? | ())> $body
+					#[allow(clippy::unnecessary_wraps)]
+					pub fn $name(
+						$p: __lua!(@type $($pt)? | &Arc<Mutex<SpecParser>>),
+						$ctx: __lua!(@type $($ct)? | Context),
+						$arg: __lua!(@type $($at)? | String)
+					) -> Result<__lua!(@type $($res)? | ())> $body
 				)+
 			}
 		)+
@@ -43,16 +44,14 @@ macro_rules! __lua {
 			let anda_out = Arc::new(Mutex::new(String::new()));
 			lua.context(|ctx| -> rlua::Result<()> {
 				let globals = ctx.globals();
-
 				$(
 					let $ext = ctx.create_table()?;
 					$({
-						let p = rpmparser.clone();
+						let p = Arc::clone(rpmparser);
 						$ext.set(stringify!($name), ctx.create_function(move |ctx, arg| $ext::$name(&p, ctx, arg))?)?;
 					})+
 					globals.set(stringify!($ext), $ext)?;
 				)+
-
 				let anda_out = anda_out.clone();
 				globals.set(
 					"print",
@@ -97,8 +96,8 @@ __lua!(
 			Ok(std::process::Command::new(&args[0]).args(&args[1..]).status().map_err(rlua::ExternalError::to_lua_err)?.code().unwrap_or(-1))
 		}
 		fn expand(p, _, arg): String {
-			let mut out: smartstring::alias::String = Default::default();
-			p.lock().parse_macro(&mut out, &mut (&*arg).into()).map_err(|e| e.to_lua_err())?;
+			let mut out = smartstring::SmartString::new();
+			p.lock().parse_macro(&mut out, &mut (&*arg).into()).map_err(rlua::ExternalError::to_lua_err)?;
 			Ok(out.to_string())
 		}
 		// glob(_, _, arg=>(String, Option<String>))
@@ -155,7 +154,7 @@ __lua!(
 			use std::str::FromStr;
 			let (v1, v2) = vers;
 			let (v1, v2) = (Version::from_str(&v1).map_err(ExternalError::to_lua_err)?, Version::from_str(&v2).map_err(ExternalError::to_lua_err)?);
-			Ok(if v1 == v2 { 0 } else if v1 < v2 { -1 } else { 1 })
+			Ok(v1.cmp(&v2) as i8)
 		}
 	}
 	mod posix {

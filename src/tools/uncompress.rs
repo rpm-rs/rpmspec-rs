@@ -1,6 +1,6 @@
 //! Decompression
 //!
-//! https://github.com/rpm-software-management/rpm/blob/master/tools/rpmuncompress.c
+//! <https://github.com/rpm-software-management/rpm/blob/master/tools/rpmuncompress.c>
 
 use std::{io::Read, path::Path};
 
@@ -50,13 +50,13 @@ impl TryFrom<&Path> for CmprxFmt {
 		magic!(ZSTD: 0x28 0x85 0x2f);
 		magic!(LZIP: 'L' 'Z' 'I' 'P');
 		magic!(LRZIP: 'L' 'R' 'Z' 'I');
-		magic!(Other: 0037 0213); // gzip
-		magic!(Other: 0037 0236); // old gzip
-		magic!(Other: 0037 0036); // pack
-		magic!(Other: 0037 0240); // SCO lzh
-		magic!(Other: 0037 0235); // compress
+		magic!(Other: 37 213); // gzip
+		magic!(Other: 37 236); // old gzip
+		magic!(Other: 37 36); // pack
+		magic!(Other: 37 240); // SCO lzh
+		magic!(Other: 37 235); // compress
 		magic!(SEVENZIP: '7' 'z' 0xbc 0xaf 0x27 0x1c);
-		if let Some(Some(ext)) = value.extension().map(|x| x.to_str()) {
+		if let Some(Some(ext)) = value.extension().map(std::ffi::OsStr::to_str) {
 			if ext == "lzma" || ext == "LZMA" {
 				return Ok(Self::LZMA);
 			}
@@ -64,6 +64,6 @@ impl TryFrom<&Path> for CmprxFmt {
 				return Ok(Self::GEM);
 			}
 		}
-		return Ok(Self::Nil);
+		Ok(Self::Nil)
 	}
 }
