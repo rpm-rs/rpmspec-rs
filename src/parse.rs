@@ -5,7 +5,7 @@ use crate::util::{gen_read_helper, textproc, Consumer};
 use chumsky::Parser;
 use color_eyre::{eyre::eyre, Help, Result, SectionExt};
 use lazy_format::lazy_format as lzf;
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use regex::Regex;
 use smartstring::alias::String;
 use std::path::Path;
@@ -971,6 +971,9 @@ impl SpecParser {
 	///
 	/// # Errors
 	/// - only if the dependency specified is invalid ([`Package::add_query`])
+	///
+	/// # Panics
+	/// - [`RPMSection::Package`] specified in `parser.section` doesn't exists in `rpm.packages`
 	pub fn parse_requires(&mut self, sline: &str) -> Result<bool> {
 		let Some(caps) = RE_REQ.captures(sline) else {
 			return Ok(false);
@@ -1029,7 +1032,7 @@ impl SpecParser {
 		debug_assert_ne!(bytes, 0, "Empty macro definition file '{}'", path.display());
 		for cap in RE.captures_iter(std::str::from_utf8(&buf)?) {
 			let name = &cap[1];
-			let m = MacroType::Runtime { file: Arc::clone(&file), offset: 0, s: Arc::new(Mutex::new(cap[2].into())), param: name.ends_with("()"), len: cap[2].len() };
+			let m = MacroType::Runtime { file: Arc::clone(&file), offset: 0, s: Arc::new(RwLock::new(cap[2].into())), param: name.ends_with("()"), len: cap[2].len() };
 			let name = name.strip_suffix("()").unwrap_or(name);
 			if let Some(v) = self.macros.get_mut::<String>(&name.into()) {
 				v.push(m);
@@ -1410,7 +1413,7 @@ impl SpecParser {
 						);
 						self.errors.push(Err::Duplicate(0, stringify!($x).into())); // FIXME: what's the line number?
 					}
-					let m = MacroType::Runtime { s: Arc::new(Mutex::new(value.clone())), file, offset, param: false, len: value.len() };
+					let m = MacroType::Runtime { s: Arc::new(RwLock::new(value.clone())), file, offset, param: false, len: value.len() };
 					if let Some(v) = self.macros.get_mut(stringify!($y)) {
 						v.push(m);
 					} else {
@@ -1724,7 +1727,7 @@ impl SpecParser {
 				// `f()` in enum item `MacroType::Internal` does not allow `impl`. But don't worry,
 				// introducing `impl` at home: `dyn`. `newreader` is the upcasted polymorphic version.
 				// The only problem is: `Read` does not impl `Clone` so we have to temporarily own `r`
-				// using `std::mem::take()`, then unwrap/build `Arc<Mutex<BufReader<Box<R>>>>`.
+				// using `std::mem::take()`, then unwrap/build `Arc<RwLock<BufReader<Box<R>>>>`.
 				let mut newreader: Consumer<dyn Read + '_> = Consumer {
 					file: Arc::clone(&reader.file),
 					pos: reader.pos,
@@ -1733,22 +1736,22 @@ impl SpecParser {
 					// Not like `f()` will call another macro, so it's certain we won't get to
 					// `_rp_macro()` again if we reach `MacroType::Internal`.
 					r: take(&mut reader.r).map(Arc::try_unwrap).map(|r| {
-						let Ok(bufreader) = r.map(Mutex::into_inner) else { panic!("Cannot unwrap Arc for Consumer reader") };
+						let Ok(bufreader) = r.map(RwLock::into_inner) else { panic!("Cannot unwrap Arc for Consumer reader") };
 						// then we get the inner `R`, upcast it, then rebuild everything
-						Arc::new(Mutex::new(BufReader::new(bufreader.into_inner() as _)))
+						Arc::new(RwLock::new(BufReader::new(bufreader.into_inner() as _)))
 					}),
 					end: 0,
 				};
 				f(self, out, &mut newreader)?;
 				// Similarly here we just put `r` back into the original `reader`.
 				reader.r = take(&mut newreader.r).map(Arc::try_unwrap).map(|r| {
-					let Ok(bufreader) = r.map(Mutex::into_inner) else { panic!("Cannot unwrap Arc for Consumer reader") };
+					let Ok(bufreader) = r.map(RwLock::into_inner) else { panic!("Cannot unwrap Arc for Consumer reader") };
 					// * What is this ugly downcasting code?
 					// SAFETY:
 					// The compiler doesn't know the actual type of `dyn Read` after upcasting...
 					// Except it does: `R`! We just need some raw pointer arithmetic to downcast it.
 					let r = unsafe { Box::<R>::from_raw(Box::into_raw(bufreader.into_inner()).cast::<R>()) };
-					Arc::new(Mutex::new(BufReader::new(r)))
+					Arc::new(RwLock::new(BufReader::new(r)))
 				});
 				reader.pos = newreader.pos;
 				Ok(())
@@ -1929,6 +1932,8 @@ mod tests {
 	use super::*;
 	use std::fs::File;
 
+	type RR = std::fs::File;
+
 	#[test]
 	fn parse_spec() -> Result<()> {
 		let f = File::open("./tests/test.spec")?;
@@ -1953,7 +1958,7 @@ mod tests {
 		let mut parser = super::SpecParser::new();
 		parser.macros.insert("macrohai".into(), vec!["hai hai".into()]);
 		let mut out = String::new();
-		parser._use_raw_macro(&mut out, &mut ("macrohai".into()))?;
+		parser._use_raw_macro::<RR>(&mut out, &mut ("macrohai".into()))?;
 		assert_eq!(out, "hai hai");
 		Ok(())
 	}
@@ -1963,7 +1968,7 @@ mod tests {
 		parser.macros.insert("mhai".into(), vec!["hai hai".into()]);
 		parser.macros.insert("quadhai".into(), vec!["%mhai %{mhai}".into()]);
 		let mut out = String::new();
-		parser._use_raw_macro(&mut out, &mut ("quadhai".into()))?;
+		parser._use_raw_macro::<RR>(&mut out, &mut ("quadhai".into()))?;
 		assert_eq!(out, "hai hai hai hai");
 		Ok(())
 	}
@@ -1975,7 +1980,7 @@ mod tests {
 		parser.macros.insert("idk2".into(), vec!["%{?mhai} %{!mhai} %{!?mhai} %{?!mhai}".into()]);
 		parser.macros.insert("aaa".into(), vec!["%idk %idk2".into()]);
 		let mut out = String::new();
-		parser._use_raw_macro(&mut out, &mut ("aaa".into()))?;
+		parser._use_raw_macro::<RR>(&mut out, &mut ("aaa".into()))?;
 		assert_eq!(out, "  hai hai hai hai hai hai  ");
 		Ok(())
 	}
@@ -1984,7 +1989,7 @@ mod tests {
 		let mut parser = super::SpecParser::new();
 		parser.macros.insert("x".into(), vec!["%(echo haai | sed 's/a/aa/g')".into()]);
 		let mut out = String::new();
-		parser._use_raw_macro(&mut out, &mut ("x".into()))?;
+		parser._use_raw_macro::<RR>(&mut out, &mut ("x".into()))?;
 		assert_eq!(out, "haaaai");
 		Ok(())
 	}
@@ -1993,11 +1998,11 @@ mod tests {
 		let mut parser = super::SpecParser::new();
 		parser.macros.insert("x".into(), vec!["%{?not_exist:hai}%{!?not_exist:bai}".into()]);
 		let mut out = String::new();
-		parser._use_raw_macro(&mut out, &mut ("x".into()))?;
+		parser._use_raw_macro::<RR>(&mut out, &mut ("x".into()))?;
 		assert_eq!(out, "bai");
 		parser.macros.insert("not_exist".into(), vec!["wha".into()]);
 		out = String::new();
-		parser._use_raw_macro(&mut out, &mut ("x".into()))?;
+		parser._use_raw_macro::<RR>(&mut out, &mut ("x".into()))?;
 		assert_eq!(out, "hai");
 		Ok(())
 	}
@@ -2005,7 +2010,7 @@ mod tests {
 	fn param_macro_args_parsing() -> Result<()> {
 		let mut parser = super::SpecParser::new();
 		assert_eq!(
-			parser._param_macro_args(&mut Consumer::from("-a hai -b asdfsdklj \\  \n abcd\ne"))?,
+			parser._param_macro_args(&mut Consumer::<RR>::from("-a hai -b asdfsdklj \\  \n abcd\ne"))?,
 			("-a hai -b asdfsdklj abcd".into(), vec!["hai".into(), "asdfsdklj".into(), "abcd".into()], vec!['a', 'b'])
 		);
 		Ok(())
@@ -2013,19 +2018,19 @@ mod tests {
 	#[test]
 	fn param_macro_expand() {
 		let mut p = super::SpecParser::new();
-		p.macros.insert("hai".into(), vec![MacroType::Runtime { s: Arc::new(Mutex::new("hai, %1!".into())), file: Arc::from(Path::new("<?>")), offset: 0, param: true, len: 8 }]);
+		p.macros.insert("hai".into(), vec![MacroType::Runtime { s: Arc::new(RwLock::new("hai, %1!".into())), file: Arc::from(Path::new("<?>")), offset: 0, param: true, len: 8 }]);
 		let out = &mut String::new();
-		p.parse_macro(out, &mut "%hai madomado".into()).unwrap();
+		p.parse_macro::<RR>(out, &mut "%hai madomado".into()).unwrap();
 		assert_eq!(out, "hai, madomado!");
 	}
 	#[test]
 	fn bad_macro() {
 		let mut p = super::SpecParser::new();
 		let out = &mut String::new();
-		p.parse_macro(out, &mut "%hai %{bai} %!?some %{!?what}".into()).unwrap();
+		p.parse_macro::<RR>(out, &mut "%hai %{bai} %!?some %{!?what}".into()).unwrap();
 		assert_eq!(out, "%hai %{bai}  ");
 		out.clear();
-		p.parse_macro(out, &mut "%!a %{!b} %?c %{?d}".into()).unwrap();
+		p.parse_macro::<RR>(out, &mut "%!a %{!b} %?c %{?d}".into()).unwrap();
 		assert_eq!(out, "%a %{!b}  ");
 	}
 	#[test]
@@ -2041,8 +2046,8 @@ mod tests {
 	fn expression() {
 		let mut p = super::SpecParser::new();
 		let out = &mut String::new();
-		p.macros.insert("hai".into(), vec![MacroType::Runtime { s: Arc::new(Mutex::new("0".into())), file: Arc::from(Path::new("<?>")), offset: 0, param: true, len: 1 }]);
-		p.parse_macro(out, &mut "%[1 + 2 * (3+4) - %hai]".into()).unwrap();
+		p.macros.insert("hai".into(), vec![MacroType::Runtime { s: Arc::new(RwLock::new("0".into())), file: Arc::from(Path::new("<?>")), offset: 0, param: true, len: 1 }]);
+		p.parse_macro::<RR>(out, &mut "%[1 + 2 * (3+4) - %hai]".into()).unwrap();
 		assert_eq!(out, "15");
 	}
 }

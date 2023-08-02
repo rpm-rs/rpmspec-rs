@@ -119,7 +119,6 @@ pub enum Expression {
 	Ver(Version),
 }
 
-/*
 impl Expression {
 	/// Returns `true` if the expression is [`Num`].
 	///
@@ -165,6 +164,43 @@ impl Expression {
 	/// The expression is not of item [`Text`].
 	///
 	/// [`Text`]: Expression::Text
+	pub fn try_into_text(self) -> Result<String, Self> {
+		if let Self::Text(v) = self {
+			Ok(v)
+		} else {
+			Err(self)
+		}
+	}
+
+	/// Returns the inner value of [`Ver`].
+	///
+	/// # Errors
+	/// The expression is not of item [`Ver`].
+	///
+	/// [`Ver`]: Expression::Ver
+	pub fn try_into_ver(self) -> Result<Version, Self> {
+		if let Self::Ver(v) = self {
+			Ok(v)
+		} else {
+			Err(self)
+		}
+	}
+
+	/// Returns the inner value of [`Num`] if it is one.
+	///
+	/// [`Num`]: Expression::Num
+	#[must_use]
+	pub const fn as_num(&self) -> Option<&i64> {
+		if let Self::Num(v) = self {
+			Some(v)
+		} else {
+			None
+		}
+	}
+
+	/// Returns the inner value of [`Text`] if it is one.
+	///
+	/// [`Text`]: Expression::Text
 	#[must_use]
 	pub const fn as_text(&self) -> Option<&String> {
 		if let Self::Text(v) = self {
@@ -174,10 +210,7 @@ impl Expression {
 		}
 	}
 
-	/// Returns the inner value of [`Ver`].
-	///
-	/// # Errors
-	/// The expression is not of item [`Ver`].
+	/// Returns the inner value of [`Ver`] if it is one.
 	///
 	/// [`Ver`]: Expression::Ver
 	#[must_use]
@@ -189,7 +222,6 @@ impl Expression {
 		}
 	}
 }
-*/
 
 impl std::fmt::Display for Expression {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -301,11 +333,27 @@ macro_rules! gen_chk {
 			};
 		}
 		macro_rules! give {
+			// * Escaping `$` sign for nested macros
+			// Apparently `macro_rules` parses `$($e:expr)` while evaluating `gen_chk` and thinks
+			// that `$e` doesn't exist, so the code actually doesn't compile. What a design flaw!
+			// This is honestly a design flaw but I guess the rust developers are just stubborn and
+			// insist on calling this bug a feature. Guess that's understandable, have a great day!
+			// Anyway, to fix this we need to use `$dollar:tt` and call `gen_chk` with `$` so it
+			// expands correctly; also we can't use `$$` yet as the feature is still in nightly.
+			// See: https://veykril.github.io/tlborm/decl-macros/minutiae/metavar-expr.html
+			// * Why `@else` expands to `unreachable!()`
+			// The 2 `@else ...` branches here are used for checking if the `$()?` metavar is
+			// given. It goes to the second branch if provided, otherwise the first branch.
 			(@else) => { unreachable!() };
 			(@else $et:ident : $dollar($e:expr),+) => {
 				return Err(Err::$et($dollar(Box::new($e)),+));
 			};
 			($t:ident($x:ident) = $y:ident $dollar(else $et:ident : $dollar($e:expr),+)?) => {
+				//                         -------^^^^^^^^^^^^^^^^^^*******^^^^^^^^^^^^^
+				// This is optional, and if omitted, it should expand to `unreachable!();`
+				// when expanding `gen_chk` with `$dollar = $`:
+				// $(else $et:ident : $($e:expr),+)?
+				// -^^^^^^^^^^^^^^^^^^*^^^^^^^^^^^^^
 				let Expression::$t($x) = $y else {
 					give!(@else $dollar($et : $dollar($e),+)?);
 				};
@@ -403,7 +451,7 @@ impl Expr {
 			Self::Macro(m) => {
 				let mut out = String::new();
 				// any type will do
-				sp._use_raw_macro::<std::fs::File>(&mut out, &mut Consumer::new(Arc::new(parking_lot::Mutex::new(m)), None, Arc::from(std::path::Path::new("<expr>"))))?;
+				sp._use_raw_macro::<std::fs::File>(&mut out, &mut Consumer::new(Arc::new(parking_lot::RwLock::new(m)), None, Arc::from(std::path::Path::new("<expr>"))))?;
 				match Self::parser().parse(&*out)? {
 					Self::Out(x) => Ok(x),
 					_ => Err(eyre!("Bad Expression: `{out}`").into()),

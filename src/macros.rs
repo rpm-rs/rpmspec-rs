@@ -3,7 +3,7 @@
 //! <https://rpm-software-management.github.io/rpm/manual/macros.html>
 use crate::{error::Err as PE, parse::SpecParser, util::Consumer};
 use color_eyre::eyre::eyre;
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use smartstring::alias::String;
 use std::{
 	collections::HashMap,
@@ -17,14 +17,14 @@ type InternalMacroFn = fn(&mut SpecParser, &mut String, &mut Consumer<dyn Read +
 #[derive(Clone)]
 pub enum MacroType {
 	Internal(InternalMacroFn),
-	Runtime { file: Arc<Path>, offset: usize, len: usize, s: Arc<Mutex<String>>, param: bool },
+	Runtime { file: Arc<Path>, offset: usize, len: usize, s: Arc<RwLock<String>>, param: bool },
 }
 
 impl std::fmt::Debug for MacroType {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
 			Self::Internal(_) => f.write_str("<builtin>")?,
-			Self::Runtime { offset, len, s, .. } => f.write_str(&s.lock()[*offset..offset + len])?,
+			Self::Runtime { offset, len, s, .. } => f.write_str(&s.read()[*offset..offset + len])?,
 		}
 		Ok(())
 	}
@@ -32,7 +32,7 @@ impl std::fmt::Debug for MacroType {
 
 impl From<&str> for MacroType {
 	fn from(value: &str) -> Self {
-		Self::Runtime { file: Arc::from(Path::new("unknown")), offset: 0, s: Arc::new(Mutex::new(value.into())), param: false, len: value.len() }
+		Self::Runtime { file: Arc::from(Path::new("unknown")), offset: 0, s: Arc::new(RwLock::new(value.into())), param: false, len: value.len() }
 	}
 }
 
@@ -113,15 +113,15 @@ __internal_macros!(
 		let mut rawexpression = String::new();
 		expand(p, &mut rawexpression, r)?;
 		// any type will do
-		let mut csm: Consumer<std::fs::File> = Consumer::new(Arc::new(Mutex::new(rawexpression)), None, Arc::from(Path::new("<expr>")));
+		let mut csm: Consumer<std::fs::File> = Consumer::new(Arc::new(RwLock::new(rawexpression)), None, Arc::from(Path::new("<expr>")));
 		p.parse_expr(o, &mut csm)?;
 		Ok(())
 	}
 	macro lua(p, o, r) {
 		let content: String = r.collect();
-		let parser = Arc::new(Mutex::new(std::mem::take(p)));
+		let parser = Arc::new(RwLock::new(std::mem::take(p)));
 		let out = crate::lua::run(&parser, &content)?;
-		std::mem::swap(p, &mut Arc::try_unwrap(parser).expect("Cannot unwrap Arc for print() output in lua").into_inner()); // break down Arc then break down Mutex
+		std::mem::swap(p, &mut Arc::try_unwrap(parser).expect("Cannot unwrap Arc for print() output in lua").into_inner()); // break down Arc then break down RwLock
 		o.push_str(&out);
 		Ok(())
 	}
@@ -270,11 +270,7 @@ __internal_macros!(
 		o.push_str(&path);
 		Ok(())
 	}
-	macro getncpus(_, o, r) {
-		if r.next().is_some() {
-			r.back();
-			tracing::warn!(args=?r.collect::<String>(), "Unnecessary arguments supplied to `%getncpus`.");
-		}
+	macro getncpus(_, o, _) {
 		o.push_str(&num_cpus::get().to_string());
 		Ok(())
 	}
@@ -317,13 +313,13 @@ __internal_macros!(
 	}
 	macro S(p, o, r) {
 		// FIXME?
-		expand(p, o, &mut Consumer::new(Arc::new(Mutex::new("%SOURCE".into())), None, r.file.clone()))?;
+		expand(p, o, &mut Consumer::new(Arc::new(RwLock::new("%SOURCE".into())), None, r.file.clone()))?;
 		r.for_each(|c| o.push(c));
 		Ok(())
 	}
 	macro P(p, o, r) {
 		// FIXME?
-		expand(p, o, &mut Consumer::new(Arc::new(Mutex::new("%PATCH".into())), None, r.file.clone()))?;
+		expand(p, o, &mut Consumer::new(Arc::new(RwLock::new("%PATCH".into())), None, r.file.clone()))?;
 		r.for_each(|c| o.push(c));
 		Ok(())
 	}
@@ -343,7 +339,7 @@ __internal_macros!(
 					continue;
 				}
 				let MacroType::Runtime { file, offset, len, s, param } = v else { unreachable!() };
-				let ss = s.lock();
+				let ss = s.read();
 				let front = &ss[..*offset];
 				let nline = front.chars().filter(|c| *c == '\n').count() + 1;
 				let col = offset - front.find('\n').unwrap_or(0);

@@ -1,4 +1,4 @@
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use smartstring::alias::String;
 use std::{
 	io::{BufReader, Read},
@@ -54,28 +54,28 @@ macro_rules! gen_read_helper {
 }
 
 #[derive(Debug, Clone)]
-pub struct Consumer<R: Read + ?Sized = stringreader::StringReader<'static>> {
-	pub s: Arc<Mutex<String>>,
-	pub r: Option<Arc<Mutex<BufReader<Box<R>>>>>,
+pub struct Consumer<R: Read + ?Sized> {
+	pub s: Arc<RwLock<String>>,
+	pub r: Option<Arc<RwLock<BufReader<Box<R>>>>>,
 	pub file: Arc<Path>,
 	pub pos: usize,
 	pub end: usize,
 }
 
-impl Default for Consumer {
+impl<R: Read> Default for Consumer<R> {
 	fn default() -> Self {
-		Self { s: Arc::new(Mutex::new("".into())), r: None, file: Arc::from(Path::new("")), pos: 0, end: 0 }
+		Self { s: Arc::new(RwLock::new("".into())), r: None, file: Arc::from(Path::new("")), pos: 0, end: 0 }
 	}
 }
 
 impl<R: Read + ?Sized> Consumer<R> {
-	pub fn new(s: Arc<Mutex<String>>, r: Option<Arc<Mutex<BufReader<Box<R>>>>>, file: Arc<Path>) -> Self {
+	pub fn new(s: Arc<RwLock<String>>, r: Option<Arc<RwLock<BufReader<Box<R>>>>>, file: Arc<Path>) -> Self {
 		Self { end: 0, s, r, pos: 0, file }
 	}
 	#[must_use]
 	pub fn range(&mut self, r: std::ops::Range<usize>) -> Option<Self> {
 		let cur = self.pos;
-		while self.s.lock().len() < r.end {
+		while self.s.read().len() < r.end {
 			self.next()?;
 		}
 		self.pos = cur;
@@ -85,6 +85,7 @@ impl<R: Read + ?Sized> Consumer<R> {
 	pub fn back(&mut self) {
 		self.pos -= 1;
 	}
+	// TODO: Result<> instead
 	pub fn read_til_eol(&mut self) -> Option<String> {
 		let mut ps = vec![];
 		let mut out = String::new();
@@ -162,16 +163,17 @@ impl<R: ?Sized + Read> Iterator for Consumer<R> {
 		if self.end != 0 && self.pos >= self.end {
 			return None;
 		}
-		let mut s = self.s.lock();
+		let s = self.s.read();
 		if let Some(c) = s.chars().nth(self.pos) {
 			self.pos += 1;
 			return Some(c);
 		}
-		let mut buf = [0; 64];
-		let nbyte = self.r.as_mut()?.lock().read(&mut buf).ok()?;
+		let mut buf = [0; 1024];
+		let nbyte = self.r.as_mut()?.write().read(&mut buf).ok()?;
 		if nbyte == 0 {
 			return None; // EOF
 		}
+		let mut s = self.s.write();
 		s.push_str(core::str::from_utf8(&buf[..nbyte]).map_err(|e| color_eyre::eyre::eyre!("cannot parse buffer `{buf:?}`: {e}")).ok()?);
 		let Some(c) = s.chars().nth(self.pos) else { panic!("Consumer has no `s[{}]` after reading from `r`, where `s` is: {s}", self.pos) };
 		drop(s);
@@ -180,9 +182,9 @@ impl<R: ?Sized + Read> Iterator for Consumer<R> {
 	}
 }
 
-impl From<&str> for Consumer {
+impl<R: Read> From<&str> for Consumer<R> {
 	fn from(s: &str) -> Self {
-		Self::new(Arc::from(Mutex::new(s.into())), None, Arc::from(Path::new("<?>")))
+		Self::new(Arc::from(RwLock::new(s.into())), None, Arc::from(Path::new("<?>")))
 	}
 }
 

@@ -8,9 +8,8 @@
 //! aka. `rlua::UserData` \
 //! there are two things: `rpm` and `posix`. See more information:
 //! <https://rpm-software-management.github.io/rpm/manual/lua.html>
-// #![allow(clippy::unnecessary_wraps, clippy::needless_pass_by_value)]
 use crate::parse::SpecParser;
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use rlua::{Lua, Result};
 use std::sync::Arc;
 mod repl;
@@ -27,21 +26,21 @@ macro_rules! __lua {
 				use base64::{engine::general_purpose::STANDARD, Engine};
 				#[allow(unused_imports)]
 				use rlua::{Context, ExternalError, Result};
-				use parking_lot::Mutex;
+				use parking_lot::RwLock;
 				use std::sync::Arc;
 				$(
 					#[allow(clippy::unnecessary_wraps)]
 					pub fn $name(
-						$p: __lua!(@type $($pt)? | &Arc<Mutex<SpecParser>>),
+						$p: __lua!(@type $($pt)? | &Arc<RwLock<SpecParser>>),
 						$ctx: __lua!(@type $($ct)? | Context),
 						$arg: __lua!(@type $($at)? | String)
 					) -> Result<__lua!(@type $($res)? | ())> $body
 				)+
 			}
 		)+
-		pub(crate) fn run(rpmparser: &Arc<Mutex<SpecParser>>, script: &str) -> Result<String> {
+		pub(crate) fn run(rpmparser: &Arc<RwLock<SpecParser>>, script: &str) -> Result<String> {
 			let lua = Lua::new();
-			let anda_out = Arc::new(Mutex::new(String::new()));
+			let anda_out = Arc::new(RwLock::new(String::new()));
 			lua.context(|ctx| -> rlua::Result<()> {
 				let globals = ctx.globals();
 				$(
@@ -56,7 +55,7 @@ macro_rules! __lua {
 				globals.set(
 					"print",
 					ctx.create_function(move |_, s: String| {
-						anda_out.lock().push_str(&s);
+						anda_out.write().push_str(&s);
 						Ok(())
 					})?,
 				)?;
@@ -86,7 +85,7 @@ __lua!(
 						name.into()
 					},
 				);
-				p.lock().macros.insert(name.into(), vec![(*def).into()]);
+				p.write().macros.insert(name.into(), vec![(*def).into()]);
 				Ok(())
 			} else {
 				Err("Invalid syntax: `%define {def}`".to_lua_err())
@@ -97,7 +96,7 @@ __lua!(
 		}
 		fn expand(p, _, arg): String {
 			let mut out = smartstring::SmartString::new();
-			p.lock().parse_macro(&mut out, &mut (&*arg).into()).map_err(rlua::ExternalError::to_lua_err)?;
+			p.write().parse_macro::<std::fs::File>(&mut out, &mut (&*arg).into()).map_err(rlua::ExternalError::to_lua_err)?;
 			Ok(out.to_string())
 		}
 		// glob(_, _, arg=>(String, Option<String>))
@@ -107,7 +106,7 @@ __lua!(
 			Ok(())
 		}
 		fn isdefined(p, _, name): (bool, bool) {
-			if let Some(def) = p.lock().macros.get(&*name) {
+			if let Some(def) = p.read().macros.get(&*name) {
 				if let Some(MacroType::Runtime { param, .. }) = def.last() {
 					return Ok((true, *param));
 				}
@@ -115,7 +114,7 @@ __lua!(
 			Ok((false, false))
 		}
 		fn load(p, _, arg) {
-			p.lock().load_macro_from_file(&std::path::PathBuf::from(arg)).map_err(rlua::ExternalError::to_lua_err)
+			p.write().load_macro_from_file(&std::path::PathBuf::from(arg)).map_err(rlua::ExternalError::to_lua_err)
 		}
 		// todo rpm.fd
 		// * BEGIN: File operations
@@ -146,7 +145,7 @@ __lua!(
 			todo!()
 		}
 		fn undefine(p, _, name) {
-			p.lock().macros.remove(&*name).ok_or_else(|| "error undefining macro".to_lua_err())?;
+			p.write().macros.remove(&*name).ok_or_else(|| "error undefining macro".to_lua_err())?;
 			Ok(())
 		}
 		fn vercmp(_, _, vers=>(String, String)): i8 {
@@ -161,8 +160,8 @@ __lua!(
 		fn access(_, _, _=>(String, Option<String>)): bool {
 			todo!()
 		}
-		fn chdir(_, _, _) {
-			todo!()
+		fn chdir(_, _, dir) {
+			std::env::set_current_dir(dir).map_err(ExternalError::to_lua_err)
 		}
 		fn chmod(_, _, _=>(String, String, String)) {
 			todo!()
@@ -171,10 +170,27 @@ __lua!(
 			todo!()
 		}
 		fn ctermid(_, _, _=>()): String {
-			todo!()
+			// SAFETY: mado dunno??
+			// well it's just pointer arithmetic + string manipulations
+			let cstr = unsafe {
+				// ctermid() can pass in null for current terminal
+				let out = libc::ctermid(std::ptr::null_mut());
+				core::ffi::CStr::from_ptr(out)
+			};
+			cstr.to_str().map_err(ExternalError::to_lua_err).map(ToOwned::to_owned)
 		}
-		fn dir(_, _, _=>Option<String>): Vec<String> {
-			todo!()
+		fn dir(_, _, dir=>Option<String>): Vec<String> {
+			let dir = match dir {
+				Some(dir) => std::path::PathBuf::from(dir),
+				None => std::env::current_dir().map_err(ExternalError::to_lua_err)?,
+			};
+			let rd = std::fs::read_dir(dir).map_err(ExternalError::to_lua_err)?;
+			let mut res = vec![];
+			for f in rd {
+				let f = f.map_err(ExternalError::to_lua_err)?;
+				res.push(f.path().to_string_lossy().to_string());
+			}
+			Ok(res)
 		}
 		fn errno(_, _, _=>()): (String, isize) {
 			todo!()
@@ -182,17 +198,17 @@ __lua!(
 		fn exec(_, _, _=>Vec<String>) {
 			todo!()
 		}
-		fn files(_, _, _=>Option<String>): Vec<String> {
-			todo!()
+		fn files(p, ctx, f=>Option<String>): Vec<String> {
+			dir(p, ctx, f)
 		}
 		fn fork(_, _, _=>()): isize {
 			todo!()
 		}
 		fn getcwd(_, _, _=>()): String {
-			todo!()
+			std::env::current_dir().map_err(ExternalError::to_lua_err).map(|p| p.to_string_lossy().to_string())
 		}
-		fn getenv(_, _, _=>()): String {
-			todo!()
+		fn getenv(_, _, name=>String): String {
+			std::env::var(name).map_err(ExternalError::to_lua_err)
 		}
 		// getgroup() return type???
 		fn getlogin(_, _, _=>()): String {
@@ -210,21 +226,23 @@ __lua!(
 		fn link(_, _, _=>(String, String)) {
 			todo!()
 		}
-		fn mkdir(_, _, _) {
-			todo!()
+		fn mkdir(_, _, path) {
+			std::fs::create_dir(path).map_err(ExternalError::to_lua_err)
 		}
 		fn mkfifo(_, _, _) {
 			todo!()
 		}
 		// pathconf() return type???
-		fn putenv(_, _, _) {
-			todo!()
+		fn putenv(_, _, kv) {
+			let (key, value) = kv.split_once('=').ok_or_else(|| "putenv(): Cannot find `=` in provided argument".to_lua_err())?;
+			std::env::set_var(key, value);
+			Ok(())
 		}
 		fn readlink(_, _, _): String {
 			todo!()
 		}
-		fn rmdir(_, _, _) {
-			todo!()
+		fn rmdir(_, _, path) {
+			std::fs::remove_dir(path).map_err(ExternalError::to_lua_err)
 		}
 		fn setgid(_, _, _) {
 			todo!()
@@ -232,17 +250,24 @@ __lua!(
 		fn setuid(_, _, _) {
 			todo!()
 		}
-		fn sleep(_, _, _=>usize) {
-			todo!()
+		fn sleep(_, _, seconds=>u64) {
+			std::thread::sleep(std::time::Duration::from_secs(seconds));
+			Ok(())
 		}
 		// stat() return type???
-		fn symlink(_, _, _=>(String, String)) {
-			todo!()
+		fn symlink(_, _, paths=>(String, String)) {
+			let (path1, path2) = paths;
+			let path1 = std::ffi::CString::new(path1).map_err(ExternalError::to_lua_err)?;
+			let path2 = std::ffi::CString::new(path2).map_err(ExternalError::to_lua_err)?;
+			if unsafe { libc::symlink(path1.as_ptr(), path2.as_ptr()) } != 0 {
+				return Err("libc::symlink() returned -1".to_lua_err())
+			}
+			Ok(())
 		}
 		// sysconf() return type???
 		// times() return type???
-		fn ttyname(_, _, _=>usize) {
-			todo!()
+		fn ttyname(_, _, fd=>Option<i32>): String {
+			Ok(unsafe { std::ffi::CStr::from_ptr(libc::ttyname(fd.unwrap_or(0))) }.to_string_lossy().to_string())
 		}
 		fn umask(_, _, _=>Option<String>): String {
 			todo!()
@@ -256,11 +281,16 @@ __lua!(
 		fn wait(_, _, _=>usize) {
 			todo!()
 		}
-		fn setenv(_, _, _=>(String, String, bool)) {
-			todo!()
+		fn setenv(_, _, args=>(String, String, Option<bool>)) {
+			let (name, value, should_override) = args;
+			if should_override.unwrap_or(true) || matches!(std::env::var(&name), Err(std::env::VarError::NotPresent)) {
+				std::env::set_var(name, value);
+			}
+			Ok(())
 		}
-		fn unsetenv(_, _, _) {
-			todo!()
+		fn unsetenv(_, _, key) {
+			std::env::remove_var(key);
+			Ok(())
 		}
 	}
 );
