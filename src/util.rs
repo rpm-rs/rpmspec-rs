@@ -163,17 +163,22 @@ impl<R: ?Sized + Read> Iterator for Consumer<R> {
 		if self.end != 0 && self.pos >= self.end {
 			return None;
 		}
-		let s = self.s.read();
-		if let Some(c) = s.chars().nth(self.pos) {
+		if let Some(c) = self.s.read().chars().nth(self.pos) {
+			self.pos += 1;
+			return Some(c);
+		}
+		let mut s = self.s.write();
+		// we reacquire a lock and check if we still can't access it
+		if let Some(c) = self.s.read().chars().nth(self.pos) {
 			self.pos += 1;
 			return Some(c);
 		}
 		let mut buf = [0; 1024];
+		// we can lock self.r here directly since self.s is definitely controlled
 		let nbyte = self.r.as_mut()?.write().read(&mut buf).ok()?;
 		if nbyte == 0 {
 			return None; // EOF
 		}
-		let mut s = self.s.write();
 		s.push_str(core::str::from_utf8(&buf[..nbyte]).map_err(|e| color_eyre::eyre::eyre!("cannot parse buffer `{buf:?}`: {e}")).ok()?);
 		let Some(c) = s.chars().nth(self.pos) else { panic!("Consumer has no `s[{}]` after reading from `r`, where `s` is: {s}", self.pos) };
 		drop(s);

@@ -13,13 +13,13 @@ use std::sync::Arc;
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum Err {
 	/// Cannot perform this operation with a number
-	#[error("Cannot perform this operation with a number: {0:#}")]
+	#[error("Cannot perform this operation on a number: {0:#}")]
 	NotNum(Box<Expression>),
 	/// Cannot perform addition with this kind of expression
-	#[error("Cannot perform addition with this kind of expression: {0:#}")]
+	#[error("Cannot perform addition on this kind of expression: {0:#}")]
 	NoAdd(Box<Expression>),
 	/// Cannot perform multiplication and division this kind of expression
-	#[error("Cannot perform multiplication and division this kind of expression: {0:#}")]
+	#[error("Cannot perform multiplication and division on this kind of expression: {0:#}")]
 	NoMulDiv(Box<Expression>),
 	/// The types of the 2 expressions do not match
 	#[error("The types of the 2 expressions do not match: `{0:#}` and `{1:#}`")]
@@ -548,3 +548,4 @@ impl Expr {
 		}
 	}
 }
+

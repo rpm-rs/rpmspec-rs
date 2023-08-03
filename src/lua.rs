@@ -17,7 +17,7 @@ mod repl;
 macro_rules! __lua {
 	(@type $t:ty | $default:ty) => { $t };
 	(@type | $default:ty) => { $default };
-	($(mod $ext:ident{$(fn $name:ident($p:pat$(=>$pt:ty)?, $ctx:pat$(=>$ct:ty)?, $arg:pat$(=>$at:ty)?)$(: $res:ty)? $body:block)+})+) => {
+	($(mod $ext:ident{$(fn $name:ident($p:pat, $ctx:pat, $arg:pat$(=>$at:ty)?)$(: $res:ty)? $body:block)+})+) => {
 		$(
 			mod $ext {
 				#[allow(unused_imports)]
@@ -31,8 +31,8 @@ macro_rules! __lua {
 				$(
 					#[allow(clippy::unnecessary_wraps)]
 					pub fn $name(
-						$p: __lua!(@type $($pt)? | &Arc<RwLock<SpecParser>>),
-						$ctx: __lua!(@type $($ct)? | Context),
+						$p: &Arc<RwLock<SpecParser>>,
+						$ctx: Context,
 						$arg: __lua!(@type $($at)? | String)
 					) -> Result<__lua!(@type $($res)? | ())> $body
 				)+
@@ -40,7 +40,7 @@ macro_rules! __lua {
 		)+
 		pub(crate) fn run(rpmparser: &Arc<RwLock<SpecParser>>, script: &str) -> Result<String> {
 			let lua = Lua::new();
-			let anda_out = Arc::new(RwLock::new(String::new()));
+			let printout = Arc::new(RwLock::new(String::new()));
 			lua.context(|ctx| -> rlua::Result<()> {
 				let globals = ctx.globals();
 				$(
@@ -51,18 +51,18 @@ macro_rules! __lua {
 					})+
 					globals.set(stringify!($ext), $ext)?;
 				)+
-				let anda_out = anda_out.clone();
+				let printout = Arc::clone(&printout);
 				globals.set(
 					"print",
 					ctx.create_function(move |_, s: String| {
-						anda_out.write().push_str(&s);
+						printout.write().push_str(&s);
 						Ok(())
 					})?,
 				)?;
 				ctx.load(script).exec()?;
 				Ok(())
 			})?;
-			Ok(Arc::try_unwrap(anda_out).expect("Cannot unwrap Arc for print() output in lua").into_inner())
+			Ok(Arc::try_unwrap(printout).expect("Cannot unwrap Arc for print() output in lua").into_inner())
 		}
 	};
 }
