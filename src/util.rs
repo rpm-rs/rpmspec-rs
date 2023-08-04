@@ -169,7 +169,7 @@ impl<R: ?Sized + Read> Iterator for Consumer<R> {
 		}
 		let mut s = self.s.write();
 		// we reacquire a lock and check if we still can't access it
-		if let Some(c) = self.s.read().chars().nth(self.pos) {
+		if let Some(c) = s.chars().nth(self.pos) {
 			self.pos += 1;
 			return Some(c);
 		}
@@ -257,18 +257,25 @@ pub mod textproc {
 	}
 
 	/// Check for `?` and `!` in macro invocation, returns true if processed.
-	pub fn flag(question: &mut bool, notflag: &mut bool, ch: char) -> bool {
+	pub fn flag(question: &mut bool, notflag: &mut bool, first: &mut bool, ch: char) -> Option<bool> {
 		if ch == '!' {
+			if !*first {
+				return None;
+			}
 			*notflag = !*notflag;
-			return true;
+			return Some(true);
 		}
 		if ch == '?' {
+			if !*first {
+				return None;
+			}
 			if *question {
 				warn!("Seeing double `?` flag in macro use. Ignoring.");
 			}
 			*question = true;
-			return true;
+			return Some(true);
 		}
-		false
+		*first = false;
+		Some(false)
 	}
 }
