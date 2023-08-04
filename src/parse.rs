@@ -1170,7 +1170,7 @@ impl SpecParser {
 					return Err(eyre!("Unexpected %description flag `-{x}`"));
 				}
 				let [arg] = args.as_mut_slice() else {
-					return Err(eyre!("Expected 1, found {} arguments (excluding flags) to %package", args.len()));
+					return Err(eyre!("Expected 1, found {} arguments (excluding flags) to %description", args.len()));
 				};
 				if flags.is_empty() {
 					format!("{}-{arg}", self.rpm.name.as_ref().ok_or(eyre!("Expected package name before subpackage `{arg}`"))?).into()
