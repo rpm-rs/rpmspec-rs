@@ -12,7 +12,42 @@ use crate::parse::SpecParser;
 use parking_lot::RwLock;
 use rlua::{Lua, Result};
 use std::sync::Arc;
-mod repl;
+
+// https://github.com/amethyst/rlua/blob/master/examples/repl.rs
+fn repl() {
+	Lua::new().context(|lua| {
+		let mut editor = rustyline::Editor::<()>::new().expect("Can't make new rustyline::editor");
+
+		loop {
+			let mut prompt = "> ";
+			let mut line = String::new();
+
+			loop {
+				match editor.readline(prompt) {
+					Ok(input) => line.push_str(&input),
+					Err(_) => return,
+				}
+
+				match lua.load(&line).eval::<rlua::MultiValue>() {
+					Ok(values) => {
+						editor.add_history_entry(line);
+						println!("{}", values.iter().map(|value| format!("{value:?}")).collect::<Vec<_>>().join("\t"));
+						break;
+					},
+					Err(rlua::Error::SyntaxError { incomplete_input: true, .. }) => {
+						// continue reading input and append it to `line`
+						line.push('\n'); // separate input lines
+						prompt = ">> ";
+					},
+					Err(e) => {
+						eprintln!("error: {e}");
+						break;
+					},
+				}
+			}
+		}
+	});
+}
 
 macro_rules! __lua {
 	(@type $t:ty | $default:ty) => { $t };
@@ -101,7 +136,7 @@ __lua!(
 		}
 		// glob(_, _, arg=>(String, Option<String>))
 		fn interactive(_, _, _=>()) {
-			super::repl::repl(); // lazy
+			super::repl(); // lazy
 			// todo mimic
 			Ok(())
 		}
@@ -157,17 +192,34 @@ __lua!(
 		}
 	}
 	mod posix {
-		fn access(_, _, _=>(String, Option<String>)): bool {
-			todo!()
+		fn access(_, _, args=>(String, Option<String>)): bool {
+			let (path, mode) = args;
+			let mode = mode.as_ref().map(|s| s.as_str()).unwrap_or("f");
+			let p = std::path::Path::new(&path);
+			if mode.contains('f') && !p.exists(){
+				return Ok(false);
+			}
+			use std::os::unix::fs::PermissionsExt;
+			let perms = p.metadata().map_err(ExternalError::to_lua_err)?.permissions().mode();
+			let x = perms & 0o7;
+			let w = (perms >> 3) & 0o7;
+			let r = (perms >> 6) & 0o7;
+			if mode.contains('r') && r == 0 { return Ok(false); }
+			if mode.contains('w') && w == 0 { return Ok(false); }
+			if mode.contains('x') && x == 0 { return Ok(false); }
+			Ok(true)
 		}
 		fn chdir(_, _, dir) {
 			std::env::set_current_dir(dir).map_err(ExternalError::to_lua_err)
 		}
-		fn chmod(_, _, _=>(String, String, String)) {
-			todo!()
+		fn chmod(_, _, args=>(String, String)) {
+			std::process::Command::new("chmod").arg(args.1).arg(args.0).status().map_err(ExternalError::to_lua_err)?;
+			Ok(())
 		}
-		fn chown(_, _, _=>(String, String, String)) {
-			todo!()
+		fn chown(_, _, args=>(String, String, String)) {
+			let (path, user, group) = args;
+			std::process::Command::new("chown").arg(format!("{user}:{group}")).arg(path).status().map_err(ExternalError::to_lua_err)?;
+			Ok(())
 		}
 		fn ctermid(_, _, _=>()): String {
 			// SAFETY: mado dunno??

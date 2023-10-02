@@ -291,8 +291,9 @@ __internal_macros!(
 		}
 		Ok(())
 	}
-	macro rpmversion(_, _, _) {
-		todo!()
+	macro rpmversion(_, o, _) {
+		o.push_str(env!("CARGO_PKG_VERSION"));
+		Ok())
 	}
 	macro echo(_, _, r) {
 		tracing::info!("{}", r.collect::<String>());
@@ -323,9 +324,10 @@ __internal_macros!(
 		r.for_each(|c| o.push(c));
 		Ok(())
 	}
-	// macro trace(p, o, r) {
-	// 	todo!()
-	// }
+	macro trace(_, _, _) {
+		tracing::warn!("`%trace` is not supposed by rpmspec-rs");
+		Ok(())
+	}
 	macro dump(p, _, r) {
 		let args = r.collect::<String>();
 		if !args.is_empty() {
