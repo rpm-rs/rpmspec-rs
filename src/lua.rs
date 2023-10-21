@@ -16,7 +16,7 @@ use std::sync::Arc;
 // https://github.com/amethyst/rlua/blob/master/examples/repl.rs
 fn repl() {
 	Lua::new().context(|lua| {
-		let mut editor = rustyline::Editor::<()>::new().expect("Can't make new rustyline::editor");
+		let mut editor = rustyline::DefaultEditor::new().expect("Can't make new rustyline::DefaultEditor");
 
 		loop {
 			let mut prompt = "> ";
@@ -30,7 +30,7 @@ fn repl() {
 
 				match lua.load(&line).eval::<rlua::MultiValue>() {
 					Ok(values) => {
-						editor.add_history_entry(line);
+						// editor.add_history_entry(line);
 						println!("{}", values.iter().map(|value| format!("{value:?}")).collect::<Vec<_>>().join("\t"));
 						break;
 					},
@@ -184,7 +184,7 @@ __lua!(
 			Ok(())
 		}
 		fn vercmp(_, _, vers=>(String, String)): i8 {
-			use crate::tools::expr::Version;
+			use rpmspec_common::expr::Version;
 			use std::str::FromStr;
 			let (v1, v2) = vers;
 			let (v1, v2) = (Version::from_str(&v1).map_err(ExternalError::to_lua_err)?, Version::from_str(&v2).map_err(ExternalError::to_lua_err)?);
@@ -194,7 +194,7 @@ __lua!(
 	mod posix {
 		fn access(_, _, args=>(String, Option<String>)): bool {
 			let (path, mode) = args;
-			let mode = mode.as_ref().map(|s| s.as_str()).unwrap_or("f");
+			let mode = mode.as_ref().map_or("f", std::string::String::as_str);
 			let p = std::path::Path::new(&path);
 			if mode.contains('f') && !p.exists(){
 				return Ok(false);

@@ -1,12 +1,12 @@
 //! Parser for rpmspec. See [`SpecParser`].
-use crate::error::Err;
 use crate::macros::MacroType;
-use crate::util::{gen_read_helper, textproc, Consumer};
-use chumsky::Parser;
+use crate::util::{textproc, Consumer};
 use color_eyre::{eyre::eyre, Help, Result, SectionExt};
 use lazy_format::lazy_format as lzf;
 use parking_lot::RwLock;
 use regex::Regex;
+use rpmspec_common::gen_read_helper;
+use rpmspec_common::PErr as Err;
 use smartstring::alias::String;
 use std::path::Path;
 use std::{
@@ -793,9 +793,11 @@ pub struct RPMSpec {
 	/// Represents `%changelog`
 	pub changelog: Changelogs,
 
-	/// Represents `Name:`
+	/// Represents `Name:`;
+	/// The base name of the package, which should match the SPEC filename.
 	pub name: Option<String>,
-	/// Represents `Version:`
+	/// Represents `Version:`;
+	/// This usually is the upstream version number of the software.
 	pub version: Option<String>,
 	/// Represents `Release:`
 	pub release: Option<String>,
@@ -906,6 +908,16 @@ impl RPMSpec {
 			..Self::default()
 		}
 	}
+
+	/// Write the content of [`RPMSpec`] into a file specified by the path.
+	pub fn save_to<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
+		std::fs::write(path, self.render())
+	}
+
+	/// Renders the content of [`RPMSpec`] into a String.
+	#[must_use] pub fn render(&self) -> String {
+		todo!();
+	}
 }
 
 /// An RPM spec parser.
@@ -951,9 +963,15 @@ impl SpecParser {
 	/// - Invalid syntax in expression
 	/// - Cannot evaluate expression
 	pub fn parse_expr(&mut self, out: &mut String, reader: &mut Consumer<impl Read>) -> Result<(), Err> {
-		let parser = crate::tools::expr::Expr::parser();
+		use chumsky::Parser;
+
+		let parser = rpmexpr::Expr::parser();
 		let expr = parser.parse(&*reader.collect::<String>())?;
-		out.push_str(&expr.eval(self)?.to_string());
+		out.push_str(
+			&expr
+				.eval(&mut |out, m| self._use_raw_macro::<std::fs::File>(out, &mut Consumer::new(Arc::new(parking_lot::RwLock::new(m)), None, Arc::from(std::path::Path::new("<expr>")))))?
+				.to_string(),
+		);
 		Ok(())
 	}
 
@@ -1815,7 +1833,7 @@ impl SpecParser {
 
 	/// Parse the stuff after %, and determines `{[()]}`.
 	/// FIXME: please REFACTOR me!!
-	pub(crate) fn _use_raw_macro<R: Read>(&mut self, out: &mut String, chars: &mut Consumer<R>) -> Result<(), Err> {
+	pub fn _use_raw_macro<R: Read>(&mut self, out: &mut String, chars: &mut Consumer<R>) -> Result<(), Err> {
 		let (mut notflag, mut question, mut first) = (false, false, true);
 		let (mut content, mut quotes) = (String::new(), String::new());
 		gen_read_helper!(chars quotes);

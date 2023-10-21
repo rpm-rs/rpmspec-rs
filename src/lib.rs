@@ -14,10 +14,11 @@
 #![warn(clippy::disallowed_types)]
 #![warn(missing_docs)]
 
-pub mod error;
 pub mod parse;
 #[macro_use]
-mod util;
 pub mod lua;
-mod macros;
+pub mod macros;
 pub mod tools;
+
+pub use parse::RPMSpec;
+pub use rpmspec_common::{error, util};

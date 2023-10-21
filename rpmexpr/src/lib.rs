@@ -2,236 +2,13 @@
 //!
 //! RPM expressions are expressions used in spec files with the `%[]` notation,
 //! composed of different operators and 3 data types: strings, integers and RPM versions.
-use crate::{error::Err as PE, parse::SpecParser, util::Consumer};
+use std::str::FromStr;
+
 use chumsky::prelude::*;
 use color_eyre::eyre::eyre;
+use rpmspec_common::{expr::{Expression, Version}, ExprErr as Err, PErr as PE};
 use smartstring::alias::String;
-use std::str::FromStr;
-use std::sync::Arc;
 
-/// Errors during parsing expressions
-#[derive(Debug, Clone, thiserror::Error)]
-pub enum Err {
-	/// Cannot perform this operation with a number
-	#[error("Cannot perform this operation on a number: {0:#}")]
-	NotNum(Box<Expression>),
-	/// Cannot perform addition with this kind of expression
-	#[error("Cannot perform addition on this kind of expression: {0:#}")]
-	NoAdd(Box<Expression>),
-	/// Cannot perform multiplication and division this kind of expression
-	#[error("Cannot perform multiplication and division on this kind of expression: {0:#}")]
-	NoMulDiv(Box<Expression>),
-	/// The types of the 2 expressions do not match
-	#[error("The types of the 2 expressions do not match: `{0:#}` and `{1:#}`")]
-	TypeMismatch(Box<Expression>, Box<Expression>),
-	/// Error when parsing macros
-	#[error("In `%[expr]`, found macro expansion error: {0:#}")]
-	MacroErr(Box<crate::error::Err>),
-	/// Error when parsing %[] from Chumsky
-	#[error("Cannot parse expression: {0:?}")]
-	BadExprParse(Box<[Simple<char>]>),
-}
-
-impl From<crate::error::Err> for Err {
-	fn from(value: PE) -> Self {
-		Self::MacroErr(Box::new(value))
-	}
-}
-
-impl From<Vec<Simple<char>>> for Err {
-	fn from(value: Vec<Simple<char>>) -> Self {
-		Self::BadExprParse(value.into_boxed_slice())
-	}
-}
-
-impl From<color_eyre::Report> for Err {
-	fn from(value: color_eyre::Report) -> Self {
-		Self::from(crate::error::Err::from(value))
-	}
-}
-
-/// Version in RPM spec
-#[derive(Default, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Version {
-	/// Epoch is just epoch
-	pub epoch: u32,
-	/// Version
-	pub ver: String,
-	/// Release
-	pub rel: Option<String>,
-}
-
-impl std::fmt::Display for Version {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		if self.epoch != 0 {
-			f.write_fmt(format_args!("{}:", self.epoch))?;
-		}
-		f.write_str(&self.ver)?;
-		if let Some(r) = &self.rel {
-			f.write_fmt(format_args!("-{r}"))?;
-		}
-		Ok(())
-	}
-}
-
-impl FromStr for Version {
-	type Err = Err;
-	fn from_str(s: &str) -> Result<Self, Self::Err> {
-		let mut evr = Self::default();
-		let mut last = String::new();
-		for ch in s.chars() {
-			if ch == ':' {
-				match last.parse() {
-					Ok(e) => evr.epoch = e,
-					Err(e) => return Err(eyre!("Cannot parse epoch: {e:#}").into()),
-				}
-				last.clear();
-				continue;
-			}
-			if ch == '-' {
-				if !evr.ver.is_empty() {
-					return Err(eyre!("Unexpected double `-` in version: `{}-{last:?}-`", evr.ver).into());
-				}
-				evr.ver = std::mem::take(&mut last);
-			}
-			if !ch.is_ascii_alphanumeric() && !"^~.".contains(ch) {
-				return Err(eyre!("Unexpected character `{ch}` in evr").into());
-			}
-			last.push(ch);
-		}
-		if evr.ver.is_empty() {
-			evr.ver = last;
-		} else {
-			evr.rel = Some(last);
-		}
-		Ok(evr)
-	}
-}
-
-/// Denotes the output of an expression
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Expression {
-	/// Numbers (64-bit signed integer)
-	Num(i64),
-	/// Strings
-	Text(String),
-	/// RPM [`Version`]
-	Ver(Version),
-}
-
-impl Expression {
-	/// Returns `true` if the expression is [`Num`].
-	///
-	/// [`Num`]: Expression::Num
-	#[must_use]
-	pub const fn is_num(&self) -> bool {
-		matches!(self, Self::Num(..))
-	}
-
-	/// Returns `true` if the expression is [`Text`].
-	///
-	/// [`Text`]: Expression::Text
-	#[must_use]
-	pub const fn is_text(&self) -> bool {
-		matches!(self, Self::Text(..))
-	}
-
-	/// Returns `true` if the expression is [`Ver`].
-	///
-	/// [`Ver`]: Expression::Ver
-	#[must_use]
-	pub const fn is_ver(&self) -> bool {
-		matches!(self, Self::Ver(..))
-	}
-
-	/// Returns the inner value of [`Num`].
-	///
-	/// # Errors
-	/// The expression is not of item [`Num`].
-	///
-	/// [`Num`]: Expression::Num
-	pub fn try_into_num(self) -> Result<i64, Self> {
-		if let Self::Num(v) = self {
-			Ok(v)
-		} else {
-			Err(self)
-		}
-	}
-
-	/// Returns the inner value of [`Text`].
-	///
-	/// # Errors
-	/// The expression is not of item [`Text`].
-	///
-	/// [`Text`]: Expression::Text
-	pub fn try_into_text(self) -> Result<String, Self> {
-		if let Self::Text(v) = self {
-			Ok(v)
-		} else {
-			Err(self)
-		}
-	}
-
-	/// Returns the inner value of [`Ver`].
-	///
-	/// # Errors
-	/// The expression is not of item [`Ver`].
-	///
-	/// [`Ver`]: Expression::Ver
-	pub fn try_into_ver(self) -> Result<Version, Self> {
-		if let Self::Ver(v) = self {
-			Ok(v)
-		} else {
-			Err(self)
-		}
-	}
-
-	/// Returns the inner value of [`Num`] if it is one.
-	///
-	/// [`Num`]: Expression::Num
-	#[must_use]
-	pub const fn as_num(&self) -> Option<&i64> {
-		if let Self::Num(v) = self {
-			Some(v)
-		} else {
-			None
-		}
-	}
-
-	/// Returns the inner value of [`Text`] if it is one.
-	///
-	/// [`Text`]: Expression::Text
-	#[must_use]
-	pub const fn as_text(&self) -> Option<&String> {
-		if let Self::Text(v) = self {
-			Some(v)
-		} else {
-			None
-		}
-	}
-
-	/// Returns the inner value of [`Ver`] if it is one.
-	///
-	/// [`Ver`]: Expression::Ver
-	#[must_use]
-	pub const fn as_ver(&self) -> Option<&Version> {
-		if let Self::Ver(v) = self {
-			Some(v)
-		} else {
-			None
-		}
-	}
-}
-
-impl std::fmt::Display for Expression {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Self::Num(n) => n.fmt(f),
-			Self::Text(s) => s.fmt(f),
-			Self::Ver(v) => v.fmt(f),
-		}
-	}
-}
 
 /// Represents an expression (`%[...]`)
 /// See <https://rpm-software-management.github.io/rpm/manual/macros.html#expression-expansion>
@@ -444,14 +221,13 @@ impl Expr {
 	/// # Errors
 	/// Invalid expression
 	#[allow(clippy::cognitive_complexity)] // weird to split it apart
-	pub fn eval(self, sp: &mut SpecParser) -> Result<Expression, Err> {
+	pub fn eval(self, sp: &mut impl FnMut(&mut String, String) -> Result<(), PE>) -> Result<Expression, Err> {
 		gen_chk!($, sp);
 		match self {
 			Self::Out(expr) => Ok(expr),
 			Self::Macro(m) => {
 				let mut out = String::new();
-				// any type will do
-				sp._use_raw_macro::<std::fs::File>(&mut out, &mut Consumer::new(Arc::new(parking_lot::RwLock::new(m)), None, Arc::from(std::path::Path::new("<expr>"))))?;
+				sp(&mut out, m)?;
 				match Self::parser().parse(&*out)? {
 					Self::Out(x) => Ok(x),
 					_ => Err(eyre!("Bad Expression: `{out}`").into()),

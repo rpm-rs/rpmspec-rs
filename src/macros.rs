@@ -1,7 +1,8 @@
 //! Macros in RPM
 //!
 //! <https://rpm-software-management.github.io/rpm/manual/macros.html>
-use crate::{error::Err as PE, parse::SpecParser, util::Consumer};
+use crate::{parse::SpecParser, util::Consumer};
+use rpmspec_common::PErr as PE;
 use color_eyre::eyre::eyre;
 use parking_lot::RwLock;
 use smartstring::alias::String;
@@ -293,7 +294,7 @@ __internal_macros!(
 	}
 	macro rpmversion(_, o, _) {
 		o.push_str(env!("CARGO_PKG_VERSION"));
-		Ok())
+		Ok(())
 	}
 	macro echo(_, _, r) {
 		tracing::info!("{}", r.collect::<String>());

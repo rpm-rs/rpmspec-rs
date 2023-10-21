@@ -1,3 +1,4 @@
+//! Utilities used in `rpmspec`.
 use parking_lot::RwLock;
 use smartstring::alias::String;
 use std::{
@@ -16,6 +17,7 @@ use tracing::error;
 /// - `exit_chk!()`
 /// - `next!()`
 #[rustfmt::skip] // kamo https://github.com/rust-lang/rustfmt/issues/4609
+#[macro_export]
 macro_rules! gen_read_helper {
 	($reader:ident $quotes:ident) => {
 		#[allow(unused_macros)]
@@ -192,9 +194,6 @@ impl<R: Read> From<&str> for Consumer<R> {
 		Self::new(Arc::from(RwLock::new(s.into())), None, Arc::from(Path::new("<?>")))
 	}
 }
-
-// somehow you need this to export the macro
-pub(crate) use gen_read_helper;
 
 pub mod textproc {
 	use super::Consumer;
