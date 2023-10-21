@@ -1,9 +1,9 @@
 //! [`ParserError`] used in rpmspec-rs.
 //! Yes. You heard me. The only error is [`ParserError`] and everything else is
 //! unfortunately String.
+use crate::expr::Expression;
 use chumsky::prelude::Simple;
 use smartstring::alias::String;
-use crate::expr::Expression;
 use thiserror::Error;
 
 /// Errors for some special parsing issues
@@ -84,7 +84,6 @@ impl Clone for ParseErr {
 	}
 }
 
-
 /// Errors during parsing expressions
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ExprErr {
@@ -125,4 +124,3 @@ impl From<color_eyre::Report> for ExprErr {
 		Self::from(ParseErr::from(value))
 	}
 }
-

@@ -2,13 +2,12 @@
 //!
 //! RPM expressions are expressions used in spec files with the `%[]` notation,
 //! composed of different operators and 3 data types: strings, integers and RPM versions.
-use std::str::FromStr;
-
 use chumsky::prelude::*;
 use color_eyre::eyre::eyre;
-use rpmspec_common::{expr::{Expression, Version}, ExprErr as Err, PErr as PE};
+use rpmspec_common::expr::{Expression, Version};
+use rpmspec_common::{ExprErr as Err, PErr as PE};
 use smartstring::alias::String;
-
+use std::str::FromStr;
 
 /// Represents an expression (`%[...]`)
 /// See <https://rpm-software-management.github.io/rpm/manual/macros.html#expression-expansion>

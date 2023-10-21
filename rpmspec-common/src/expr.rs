@@ -1,7 +1,7 @@
-use std::str::FromStr;
-use color_eyre::eyre::eyre;
 use crate::error::ExprErr;
+use color_eyre::eyre::eyre;
 use smartstring::alias::String;
+use std::str::FromStr;
 
 /// Version in RPM spec
 #[derive(Default, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

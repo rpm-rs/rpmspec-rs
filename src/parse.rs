@@ -5,15 +5,14 @@ use color_eyre::{eyre::eyre, Help, Result, SectionExt};
 use lazy_format::lazy_format as lzf;
 use parking_lot::RwLock;
 use regex::Regex;
-use rpmspec_common::gen_read_helper;
-use rpmspec_common::PErr as Err;
+use rpmspec_common::{gen_read_helper, PErr as Err};
 use smartstring::alias::String;
-use std::path::Path;
 use std::{
 	collections::HashMap,
 	io::{BufReader, Read},
 	mem::take,
 	num::ParseIntError,
+	path::Path,
 	process::Command,
 	str::FromStr,
 	sync::Arc,
@@ -92,6 +91,12 @@ pub struct Package {
 	pub epoch: Option<u32>,
 	/// Conditional operator (middle of the dependency query)
 	pub condition: PkgQCond,
+}
+
+impl std::borrow::Borrow<str> for Package {
+	fn borrow(&self) -> &str {
+		&self.name
+	}
 }
 
 impl Package {
@@ -301,6 +306,51 @@ pub struct RPMRequires {
 	pub interp: Vec<Package>,
 	/// Dependencies listed in `Requires(meta):`.
 	pub meta: Vec<Package>,
+}
+
+impl RPMRequires {
+	pub fn is_empty(&self) -> bool {
+		self.none.is_empty()
+			&& self.pre.is_empty()
+			&& self.post.is_empty()
+			&& self.preun.is_empty()
+			&& self.postun.is_empty()
+			&& self.pretrans.is_empty()
+			&& self.posttrans.is_empty()
+			&& self.verify.is_empty()
+			&& self.interp.is_empty()
+			&& self.meta.is_empty()
+	}
+}
+
+impl std::fmt::Display for RPMRequires {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		macro_rules! w {
+			($($attr:ident)*) => {
+				$({
+					let mut name = stringify!($attr);
+					if name == "none" {
+						f.write_str("Requires:       ")?;
+						f.write_str(&self.none.join(" "))?;
+						f.write_str("\n")?;
+					} else {
+						f.write_str("Requires(")?;
+						f.write_str(name)?;
+						f.write_str("):");
+						let mut padding = 5 - name.len();
+						while padding <= 0 {
+							padding += 4;
+						}
+						f.write_str(&" ".repeat(padding));
+						f.write_str(&self.$attr.join(" "))?;
+						f.write_str("\n")?;
+					}
+				})*
+			}
+		}
+		w!(none pre post preun postun pretrans posttrans verify interp meta);
+		Ok(())
+	}
 }
 
 // todo https://docs.fedoraproject.org/en-US/packaging-guidelines/Scriptlets/
@@ -763,6 +813,8 @@ pub struct RPMSpecPkg {
 	pub files: RPMFiles,
 	/// Scriptlets present in the final RPM package, such as `%post [-n] ...` and `%pretrans [-n] ...`
 	pub scriptlets: Scriptlets, // todo
+
+	                            // todo: BuildArch and stuff
 }
 
 /// Represents the entire spec file.
@@ -815,6 +867,8 @@ pub struct RPMSpec {
 	pub sources: HashMap<u32, String>,
 	/// Repreesnts `Patch0:`, `Patch1:`, ...
 	pub patches: HashMap<u32, String>,
+	/// Represents `Copyright:`
+	pub copyright: Option<String>,
 	// TODO: icon
 	// TODO: nosource nopatch
 	/// Represents `URL:`
@@ -915,8 +969,162 @@ impl RPMSpec {
 	}
 
 	/// Renders the content of [`RPMSpec`] into a String.
-	#[must_use] pub fn render(&self) -> String {
-		todo!();
+	#[must_use]
+	pub fn render(&self) -> String {
+		let mut spec = String::new();
+
+		macro_rules! pop {
+			(@self) => {self};
+			(@self $a:ident) => {$a};
+			($preamble:expr, $val:expr) => {{
+				let preamble = $preamble;
+				let padding = 14 - preamble.len();
+				spec.push_str(preamble);
+				spec.push(':');
+				spec.push_str(&" ".repeat(padding));
+				spec.push_str($val);
+				spec.push('\n');
+			}};
+			($preamble:expr => $(~$cur:ident.)?$attr:ident) => {{
+				if let Some(val) = &pop!(@self $($cur)?).$attr {
+					pop!($preamble, val);
+				}
+			}};
+			($preamble:expr => $(~$cur:ident.)?$attr:ident or $default:expr) => {{
+				pop!($preamble, pop!(@self $($cur)?).$attr.as_ref().map_or($default, |s| s));
+			}};
+			($preamble:expr => ..$(~$cur:ident.)?$attr:ident) => {{
+				if !pop!(@self $($cur)?).$attr.is_empty() {
+					pop!($preamble, &pop!(@self $($cur)?).$attr.join(" "));
+				}
+			}};
+			($preamble:ident: $($x:tt)*) => {
+				pop!(stringify!($preamble) => $($x)*);
+			};
+			($preamble:expr => $b:block) => {{
+				pop!($preamble, $b);
+			}};
+			(@use) => { "" };
+			(@use $subpackage:expr, $header:expr) => { $header:expr };
+			(@in $scriptlets:ident $(for $header:expr)?) => {
+				pop!(%(pre post preun postun pretrans posttrans verify triggerprein triggerin triggerun triggerpostun filetriggerin filetriggerun filetriggerpostun transfiletriggerin transfiletriggerun transfiletriggerpostun) in $scriptlets $(for $header)?);
+			};
+			(@header) => { "" };
+			(@header $header:expr) => { format!(" {}", $header) };
+			(%($($section:ident)*) in $scriptlets:ident $(for $header:expr)?) => {
+				// we need this because rust doesn't support macro nesting with $()? inside $()*
+				let header = pop!(@header $($header)?);
+				$(
+					if let Some(s) = &$scriptlets.$section {
+						spec.push_str("\n\n%");
+						spec.push_str(stringify!($section));
+						spec.push_str(&header);
+						spec.push('\n');
+						spec.push_str(s);
+					}
+				)*
+			};
+		}
+
+		pop!(Name: name or "pkgname");
+		pop!(Version: version or "1.0.0");
+		pop!(Release: release or "1%?dist");
+		pop!(Summary: summary or "Missing summary");
+		pop!(Epoch: { &self.epoch.to_string() });
+		pop!(Vendor: vendor);
+		pop!(URL: url);
+		pop!(Copyright: copyright);
+		pop!(Packager: packager);
+		pop!(Group: group);
+		// Icon:
+		pop!(License: license);
+		pop!(BuildArch: ..buildarch);
+		pop!(ExclusiveArch: ..exclusivearch);
+		pop!(ExclusiveOS: ..exclusiveos);
+		pop!(BuildRequires: ..buildrequires);
+		pop!(Obsoletes: ..obsoletes);
+		pop!(Conflicts: ..conflicts);
+		pop!(Provides: ..provides);
+		self.patches.iter().for_each(|(i, p)| pop!(&format!("Patch{i}") => { p }));
+		self.sources.iter().for_each(|(i, p)| pop!(&format!("Source{i}") => { p }));
+		spec.push_str(&format!("{}", self.requires));
+
+		spec.push_str("\n\n%description\n");
+		spec.push_str(if self.description.is_empty() { "%{summary}." } else { &self.description });
+
+		let headers = self.packages.iter().map(|(name, current)| {
+			spec.push_str("\n\n%package ");
+			let mut header = String::new();
+			if let Some(suffix) = name.strip_prefix(&*format!("{}-", self.name.as_ref().map_or("pkgname", |s| s))) {
+				header.push_str(suffix);
+			} else {
+				header.push_str("-n ");
+				header.push_str(&name);
+			}
+			spec.push_str(&header);
+			spec.push('\n');
+
+			if !current.summary.is_empty() {
+				pop!(Summary: { &current.summary });
+			}
+			pop!(Group: ~current.group);
+			pop!(Provides: ..~current.provides);
+			pop!(Conflicts: ..~current.conflicts);
+			pop!(Obsoletes: ..~current.obsoletes);
+			pop!(Recommends: ..~current.recommends);
+			pop!(Suggests: ..~current.suggests);
+			pop!(Supplements: ..~current.supplements);
+			pop!(Enhances: ..~current.enhances);
+			spec.push_str(&format!("{}", current.requires));
+
+			spec.push_str("\n\n%description ");
+			spec.push_str(&header);
+			spec.push('\n');
+			spec.push_str(if current.description.is_empty() { "%{summary}." } else { &current.description });
+
+			header
+		});
+		let headers: Box<[_]> = headers.collect();
+
+		// %prep
+		spec.push_str("\n\n%prep\n");
+		spec.push_str(&self.prep);
+
+		spec.push_str("\n\n%build\n");
+		spec.push_str(&self.build);
+
+		spec.push_str("\n\n%install\n");
+		spec.push_str(&self.install);
+
+		if !self.check.is_empty() {
+			spec.push_str("\n\n%check\n");
+			spec.push_str(&self.check);
+		}
+
+		let scriptlets = &self.scriptlets;
+		pop!(@in scriptlets);
+
+		self.packages.iter().zip(headers.iter()).for_each(|((_, current), header)| {
+			let scriptlets = &current.scriptlets;
+			pop!(@in scriptlets for header);
+		});
+
+		// todo: macros
+
+		spec.push_str("\n\n%files");
+		if !self.files.incl.is_empty() {
+			spec.push_str(" -f ");
+			spec.push_str(&self.files.incl);
+		}
+		spec.push('\n');
+		if !self.files.raw.is_empty() {
+			spec.push_str(&self.files.raw);
+		} else {
+			todo!()
+		}
+
+		todo!()
+		// spec
 	}
 }
 
@@ -1486,7 +1694,7 @@ impl SpecParser {
 			}
 		}
 
-		opt!(Name name|Version version|Release release|License license|SourceLicense sourcelicense|URL url|BugURL bugurl|ModularityLabel modularitylabel|DistTag disttag|VCS vcs|Distribution distribution|Vendor vendor|Packager packager|Group group|Summary summary);
+		opt!(Name name|Version version|Release release|License license|SourceLicense sourcelicense|URL url|BugURL bugurl|ModularityLabel modularitylabel|DistTag disttag|VCS vcs|Distribution distribution|Copyright copyright|Vendor vendor|Packager packager|Group group|Summary summary);
 		opt!(~AutoReqProv autoreqprov);
 		opt!(~AutoReq autoreq);
 		opt!(~AutoProv autoprov);

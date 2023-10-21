@@ -2,23 +2,34 @@
 //!
 //! <https://rpm-software-management.github.io/rpm/manual/macros.html>
 use crate::{parse::SpecParser, util::Consumer};
-use rpmspec_common::PErr as PE;
 use color_eyre::eyre::eyre;
 use parking_lot::RwLock;
+use rpmspec_common::PErr as PE;
 use smartstring::alias::String;
-use std::{
-	collections::HashMap,
-	io::{Read, Write},
-	path::Path,
-	sync::Arc,
-};
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::{path::Path, sync::Arc};
 
 type InternalMacroFn = fn(&mut SpecParser, &mut String, &mut Consumer<dyn Read + '_>) -> Result<(), PE>;
 
+/// A macro used in a spec file
 #[derive(Clone)]
 pub enum MacroType {
+	/// Represents a macro written in rust and defined internally
 	Internal(InternalMacroFn),
-	Runtime { file: Arc<Path>, offset: usize, len: usize, s: Arc<RwLock<String>>, param: bool },
+	/// Represents a macro defined during runtime
+	Runtime {
+		/// Path to file with the macro defined
+		file: Arc<Path>,
+		/// Number of chars before the macro definition
+		offset: usize,
+		/// Length of macro definition
+		len: usize,
+		/// The entire file pretty much
+		s: Arc<RwLock<String>>,
+		/// Is this a parameterized macro?
+		param: bool,
+	},
 }
 
 impl std::fmt::Debug for MacroType {
@@ -44,6 +55,7 @@ macro_rules! __internal_macros {
 			fn $m($p: &mut SpecParser, $o: &mut String, $r: &mut Consumer<dyn Read + '_>) -> Result<(), PE> $body
 		)+
 		lazy_static::lazy_static! {
+			/// A list of macros defined in rust internally
 			pub static ref INTERNAL_MACROS: HashMap<String, Vec<MacroType>> = {
 				let mut ret = HashMap::new();
 				$({
