@@ -50,56 +50,56 @@ fn repl() {
 }
 
 macro_rules! __lua {
-	(@type $t:ty | $default:ty) => { $t };
-	(@type | $default:ty) => { $default };
-	($(mod $ext:ident{$(fn $name:ident($p:pat, $ctx:pat, $arg:pat$(=>$at:ty)?)$(: $res:ty)? $body:block)+})+) => {
-		$(
-			mod $ext {
-				#[allow(unused_imports)]
-				use crate::{macros::MacroType, parse::SpecParser};
-				#[allow(unused_imports)]
-				use base64::{engine::general_purpose::STANDARD, Engine};
-				#[allow(unused_imports)]
-				use rlua::{Context, ExternalError, Result};
-				use parking_lot::RwLock;
-				use std::sync::Arc;
-				$(
-					#[allow(clippy::unnecessary_wraps)]
-					pub fn $name(
-						$p: &Arc<RwLock<SpecParser>>,
-						$ctx: Context,
-						$arg: __lua!(@type $($at)? | String)
-					) -> Result<__lua!(@type $($res)? | ())> $body
-				)+
-			}
-		)+
-		pub(crate) fn run(rpmparser: &Arc<RwLock<SpecParser>>, script: &str) -> Result<String> {
-			let lua = Lua::new();
-			let printout = Arc::new(RwLock::new(String::new()));
-			lua.context(|ctx| -> rlua::Result<()> {
-				let globals = ctx.globals();
-				$(
-					let $ext = ctx.create_table()?;
-					$({
-						let p = Arc::clone(rpmparser);
-						$ext.set(stringify!($name), ctx.create_function(move |ctx, arg| $ext::$name(&p, ctx, arg))?)?;
-					})+
-					globals.set(stringify!($ext), $ext)?;
-				)+
-				let printout = Arc::clone(&printout);
-				globals.set(
-					"print",
-					ctx.create_function(move |_, s: String| {
-						printout.write().push_str(&s);
-						Ok(())
-					})?,
-				)?;
-				ctx.load(script).exec()?;
-				Ok(())
-			})?;
-			Ok(Arc::try_unwrap(printout).expect("Cannot unwrap Arc for print() output in lua").into_inner())
-		}
-	};
+    (@type $t:ty | $default:ty) => { $t };
+    (@type | $default:ty) => { $default };
+    ($(mod $ext:ident{$(fn $name:ident($p:pat, $ctx:pat, $arg:pat$(=>$at:ty)?)$(: $res:ty)? $body:block)+})+) => {
+        $(
+            mod $ext {
+                #[allow(unused_imports)]
+                use crate::{macros::MacroType, parse::SpecParser};
+                #[allow(unused_imports)]
+                use base64::{engine::general_purpose::STANDARD, Engine};
+                #[allow(unused_imports)]
+                use rlua::{Context, ExternalError, Result};
+                use parking_lot::RwLock;
+                use std::sync::Arc;
+                $(
+                    #[allow(clippy::unnecessary_wraps)]
+                    pub fn $name(
+                        $p: &Arc<RwLock<SpecParser>>,
+                        $ctx: Context,
+                        $arg: __lua!(@type $($at)? | String)
+                    ) -> Result<__lua!(@type $($res)? | ())> $body
+                )+
+            }
+        )+
+        pub(crate) fn run(rpmparser: &Arc<RwLock<SpecParser>>, script: &str) -> Result<String> {
+            let lua = Lua::new();
+            let printout = Arc::new(RwLock::new(String::new()));
+            lua.context(|ctx| -> rlua::Result<()> {
+                let globals = ctx.globals();
+                $(
+                    let $ext = ctx.create_table()?;
+                    $({
+                        let p = Arc::clone(rpmparser);
+                        $ext.set(stringify!($name), ctx.create_function(move |ctx, arg| $ext::$name(&p, ctx, arg))?)?;
+                    })+
+                    globals.set(stringify!($ext), $ext)?;
+                )+
+                let printout = Arc::clone(&printout);
+                globals.set(
+                    "print",
+                    ctx.create_function(move |_, s: String| {
+                        printout.write().push_str(&s);
+                        Ok(())
+                    })?,
+                )?;
+                ctx.load(script).exec()?;
+                Ok(())
+            })?;
+            Ok(Arc::try_unwrap(printout).expect("Cannot unwrap Arc for print() output in lua").into_inner())
+        }
+    };
 }
 
 __lua!(
