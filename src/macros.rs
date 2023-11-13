@@ -15,21 +15,21 @@ type InternalMacroFn = fn(&mut SpecParser, &mut String, &mut Consumer<dyn Read +
 /// A macro used in a spec file
 #[derive(Clone)]
 pub enum MacroType {
-	/// Represents a macro written in rust and defined internally
-	Internal(InternalMacroFn),
-	/// Represents a macro defined during runtime
-	Runtime {
-		/// Path to file with the macro defined
-		file: Arc<Path>,
-		/// Number of chars before the macro definition
-		offset: usize,
-		/// Length of macro definition
-		len: usize,
-		/// The entire file pretty much
-		s: Arc<RwLock<String>>,
-		/// Is this a parameterized macro?
-		param: bool,
-	},
+    /// Represents a macro written in rust and defined internally
+    Internal(InternalMacroFn),
+    /// Represents a macro defined during runtime
+    Runtime {
+        /// Path to file with the macro defined
+        file: Arc<Path>,
+        /// Number of chars before the macro definition
+        offset: usize,
+        /// Length of macro definition
+        len: usize,
+        /// The entire file pretty much
+        s: Arc<RwLock<String>>,
+        /// Is this a parameterized macro?
+        param: bool,
+    },
 }
 
 impl std::fmt::Debug for MacroType {
@@ -49,13 +49,13 @@ impl From<&str> for MacroType {
 }
 
 macro_rules! __internal_macros {
-	($(macro $m:ident($p:pat, $o:pat, $r:pat) $body:block )+) => {
-		$(
-			#[allow(non_snake_case, clippy::unnecessary_wraps)]
-			fn $m($p: &mut SpecParser, $o: &mut String, $r: &mut Consumer<dyn Read + '_>) -> Result<(), PE> $body
-		)+
-		lazy_static::lazy_static! {
-			/// A list of macros defined in rust internally
+    ($(macro $m:ident($p:pat, $o:pat, $r:pat) $body:block )+) => {
+        $(
+        	#[allow(non_snake_case, clippy::unnecessary_wraps)]
+            fn $m($p: &mut SpecParser, $o: &mut String, $r: &mut Consumer<dyn Read + '_>) -> Result<(), PE> $body
+        )+
+        lazy_static::lazy_static! {
+            /// A list of macros defined in rust internally
 			pub static ref INTERNAL_MACROS: HashMap<String, Vec<MacroType>> = {
 				let mut ret = HashMap::new();
 				$({
