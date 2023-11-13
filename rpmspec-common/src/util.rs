@@ -19,40 +19,42 @@ use tracing::error;
 #[rustfmt::skip] // kamo https://github.com/rust-lang/rustfmt/issues/4609
 #[macro_export]
 macro_rules! gen_read_helper {
-	($reader:ident $quotes:ident) => {
-		#[allow(unused_macros)]
-		macro_rules! exit_chk {
-			() => {
-				if !$quotes.is_empty() {
-					return Err(eyre!("Unclosed quotes: `{}`", $quotes).into());
-				}
-			};
-		}
-		#[allow(unused_macros)]
-		macro_rules! next {
-			(#) => {{
-				let Some(ch) = $reader.next() else { exit!(); };
-				ch
-			}};
-			($c:expr) => {
-				if let Some(ch) = $reader.next() {
-					textproc::chk_ps(&mut $quotes, ch);
-					ch
-				} else {
-					textproc::back($reader, $quotes, $c);
-					exit!();
-				}
-			};
-			(~$c:expr) => {
-				if let Some(ch) = $reader.next() {
-					ch
-				} else {
-					$reader.back();
-					exit!();
-				}
-			};
-		}
-	};
+    ($reader:ident $quotes:ident) => {
+        #[allow(unused_macros)]
+        macro_rules! exit_chk {
+            () => {
+                if !$quotes.is_empty() {
+                    return Err(eyre!("Unclosed quotes: `{}`", $quotes).into());
+                }
+            };
+        }
+        #[allow(unused_macros)]
+        macro_rules! next {
+            (#) => {{
+                let Some(ch) = $reader.next() else {
+                    exit!();
+                };
+                ch
+            }};
+            ($c:expr) => {
+                if let Some(ch) = $reader.next() {
+                    textproc::chk_ps(&mut $quotes, ch);
+                    ch
+                } else {
+                    textproc::back($reader, $quotes, $c);
+                    exit!();
+                }
+            };
+            (~$c:expr) => {
+                if let Some(ch) = $reader.next() {
+                    ch
+                } else {
+                    $reader.back();
+                    exit!();
+                }
+            };
+        }
+    };
 }
 
 #[derive(Debug, Clone)]
