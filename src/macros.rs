@@ -263,107 +263,107 @@ __internal_macros!(
     macro u2p(p, o, r) {
         url2path(p, o, r)
     }
-	macro uncompress(_, o, r) {
-		use crate::tools::uncompress::CmprxFmt;
-		//? https://github.com/rpm-software-management/rpm/blob/master/tools/rpmuncompress.c#L69
-		let path: String = r.collect();
-		o.push_str(match CmprxFmt::try_from(Path::new(&*path)) {
-			Ok(CmprxFmt::Nil) => "cat ",
-			Ok(CmprxFmt::Other) => "gzip -dc ",
-			Ok(CmprxFmt::BZIP2) => "bzip2 -dc ",
-			Ok(CmprxFmt::ZIP) => "unzip ",
-			Ok(CmprxFmt::LZMA | CmprxFmt::XZ) => "xz -dc ",
-			Ok(CmprxFmt::LZIP) => "lzip -dc ",
-			Ok(CmprxFmt::LRZIP) => "lrzip -dqo- ",
-			Ok(CmprxFmt::SEVENZIP) => "7zip x ",
-			Ok(CmprxFmt::ZSTD) => "zstd -dc ",
-			Ok(CmprxFmt::GEM) => "gem unpack ",
-			Err(_) => return Ok(()),
-		});
-		o.push_str(&path);
-		Ok(())
-	}
-	macro getncpus(_, o, _) {
-		o.push_str(&num_cpus::get().to_string());
-		Ok(())
-	}
-	macro getconfidir(_, o, _) {
-		let res = std::env::var("RPM_CONFIGDIR");
-		if let Err(std::env::VarError::NotUnicode(s)) = res {
-			return Err(eyre!("%{{getconfdir}} failed: While grabbing env var `RPM_CONFIGDIR`: Non-unicode OsString {s:?}").into());
-		}
-		o.push_str(res.as_ref().map(|x| &**x).unwrap_or("/usr/lib/rpm"));
-		Ok(())
-	}
-	macro getenv(_, o, r) {
-		let name: String = r.collect();
-		match std::env::var(&*name) {
-			Ok(x) => o.push_str(&x),
-			Err(std::env::VarError::NotPresent) => {},
-			Err(std::env::VarError::NotUnicode(s)) => return Err(eyre!("%{{getenv:{name}}} failed: Non-unicode OsString {s:?}").into()),
-		}
-		Ok(())
-	}
-	macro rpmversion(_, o, _) {
-		o.push_str(env!("CARGO_PKG_VERSION"));
-		Ok(())
-	}
-	macro echo(_, _, r) {
-		tracing::info!("{}", r.collect::<String>());
-		Ok(())
-	}
-	macro warn(_, _, r) {
-		tracing::warn!("{}", r.collect::<String>());
-		Ok(())
-	}
-	macro error(_, _, r) {
-		tracing::error!("{}", r.collect::<String>());
-		Ok(())
-	}
-	macro verbose(_, o, _) {
-		// FIXME
-		o.push('0');
-		Ok(())
-	}
-	macro S(p, o, r) {
-		// FIXME?
-		expand(p, o, &mut Consumer::new(Arc::new(RwLock::new("%SOURCE".into())), None, r.file.clone()))?;
-		r.for_each(|c| o.push(c));
-		Ok(())
-	}
-	macro P(p, o, r) {
-		// FIXME?
-		expand(p, o, &mut Consumer::new(Arc::new(RwLock::new("%PATCH".into())), None, r.file.clone()))?;
-		r.for_each(|c| o.push(c));
-		Ok(())
-	}
-	macro trace(_, _, _) {
-		tracing::warn!("`%trace` is not supposed by rpmspec-rs");
-		Ok(())
-	}
-	macro dump(p, _, r) {
-		let args = r.collect::<String>();
-		if !args.is_empty() {
-			tracing::warn!(?args, "Unexpected arguments to %dump");
-		}
-		let mut stdout = std::io::stdout().lock();
-		for (k, v) in &p.macros {
-			if let Some(v) = v.last() {
-				if let MacroType::Internal(_) = v {
-					stdout.write_fmt(format_args!("[<internal>]\t%{k}\t<builtin>\n"))?;
-					continue;
-				}
-				let MacroType::Runtime { file, offset, len, s, param } = v else { unreachable!() };
-				let ss = s.read();
-				let front = &ss[..*offset];
-				let nline = front.chars().filter(|c| *c == '\n').count() + 1;
-				let col = offset - front.find('\n').unwrap_or(0);
-				let f = file.display();
-				let p = if *param { "{}" } else { "" };
-				let inner = &ss[*offset..*offset + *len];
-				stdout.write_fmt(format_args!("[{f}:{nline}:{col}]\t%{k}{p}\t{inner}\n"))?;
-			}
-		}
-		Ok(())
-	}
+    macro uncompress(_, o, r) {
+        use crate::tools::uncompress::CmprxFmt;
+        //? https://github.com/rpm-software-management/rpm/blob/master/tools/rpmuncompress.c#L69
+        let path: String = r.collect();
+        o.push_str(match CmprxFmt::try_from(Path::new(&*path)) {
+            Ok(CmprxFmt::Nil) => "cat ",
+            Ok(CmprxFmt::Other) => "gzip -dc ",
+            Ok(CmprxFmt::BZIP2) => "bzip2 -dc ",
+            Ok(CmprxFmt::ZIP) => "unzip ",
+            Ok(CmprxFmt::LZMA | CmprxFmt::XZ) => "xz -dc ",
+            Ok(CmprxFmt::LZIP) => "lzip -dc ",
+            Ok(CmprxFmt::LRZIP) => "lrzip -dqo- ",
+            Ok(CmprxFmt::SEVENZIP) => "7zip x ",
+            Ok(CmprxFmt::ZSTD) => "zstd -dc ",
+            Ok(CmprxFmt::GEM) => "gem unpack ",
+            Err(_) => return Ok(()),
+        });
+        o.push_str(&path);
+        Ok(())
+    }
+    macro getncpus(_, o, _) {
+        o.push_str(&num_cpus::get().to_string());
+        Ok(())
+    }
+    macro getconfidir(_, o, _) {
+        let res = std::env::var("RPM_CONFIGDIR");
+        if let Err(std::env::VarError::NotUnicode(s)) = res {
+            return Err(eyre!("%{{getconfdir}} failed: While grabbing env var `RPM_CONFIGDIR`: Non-unicode OsString {s:?}").into());
+        }
+        o.push_str(res.as_ref().map(|x| &**x).unwrap_or("/usr/lib/rpm"));
+        Ok(())
+    }
+    macro getenv(_, o, r) {
+        let name: String = r.collect();
+        match std::env::var(&*name) {
+            Ok(x) => o.push_str(&x),
+            Err(std::env::VarError::NotPresent) => {},
+            Err(std::env::VarError::NotUnicode(s)) => return Err(eyre!("%{{getenv:{name}}} failed: Non-unicode OsString {s:?}").into()),
+        }
+        Ok(())
+    }
+    macro rpmversion(_, o, _) {
+        o.push_str(env!("CARGO_PKG_VERSION"));
+        Ok(())
+    }
+    macro echo(_, _, r) {
+        tracing::info!("{}", r.collect::<String>());
+        Ok(())
+    }
+    macro warn(_, _, r) {
+        tracing::warn!("{}", r.collect::<String>());
+        Ok(())
+    }
+    macro error(_, _, r) {
+        tracing::error!("{}", r.collect::<String>());
+        Ok(())
+    }
+    macro verbose(_, o, _) {
+        // FIXME
+        o.push('0');
+        Ok(())
+    }
+    macro S(p, o, r) {
+        // FIXME?
+        expand(p, o, &mut Consumer::new(Arc::new(RwLock::new("%SOURCE".into())), None, r.file.clone()))?;
+        r.for_each(|c| o.push(c));
+        Ok(())
+    }
+    macro P(p, o, r) {
+        // FIXME?
+        expand(p, o, &mut Consumer::new(Arc::new(RwLock::new("%PATCH".into())), None, r.file.clone()))?;
+        r.for_each(|c| o.push(c));
+        Ok(())
+    }
+    macro trace(_, _, _) {
+        tracing::warn!("`%trace` is not supposed by rpmspec-rs");
+        Ok(())
+    }
+    macro dump(p, _, r) {
+        let args = r.collect::<String>();
+        if !args.is_empty() {
+            tracing::warn!(?args, "Unexpected arguments to %dump");
+        }
+        let mut stdout = std::io::stdout().lock();
+        for (k, v) in &p.macros {
+            if let Some(v) = v.last() {
+                if let MacroType::Internal(_) = v {
+                    stdout.write_fmt(format_args!("[<internal>]\t%{k}\t<builtin>\n"))?;
+                    continue;
+                }
+                let MacroType::Runtime { file, offset, len, s, param } = v else { unreachable!() };
+                let ss = s.read();
+                let front = &ss[..*offset];
+                let nline = front.chars().filter(|c| *c == '\n').count() + 1;
+                let col = offset - front.find('\n').unwrap_or(0);
+                let f = file.display();
+                let p = if *param { "{}" } else { "" };
+                let inner = &ss[*offset..*offset + *len];
+                stdout.write_fmt(format_args!("[{f}:{nline}:{col}]\t%{k}{p}\t{inner}\n"))?;
+            }
+        }
+        Ok(())
+    }
 );
