@@ -139,71 +139,71 @@ __internal_macros!(
         Ok(())
     }
     macro macrobody(p, o, r) {
-		let name = r.collect();
-		#[rustfmt::skip]
-		let Some(Some(m)) = p.macros.get(&name).map(|x| x.last()) else {
-			return Err(PE::MacroNotFound(name));
-		};
-		match m {
-			MacroType::Internal(_) => o.push_str("<builtin>"),
-			MacroType::Runtime { file, offset, len, s, .. } => {
-				// we can put anything as <R>
-				let mut csm: Consumer<std::fs::File> = Consumer::new(Arc::clone(s), None, Arc::clone(file));
-				csm.pos = *offset;
-				csm.end = *offset + len;
-				o.push_str(&csm.collect::<String>());
-			},
-		}
-		Ok(())
-	}
-	macro quote(_, o, r) {
-		o.push('"');
-		o.push_str(&r.collect::<String>());
-		o.push('"');
-		Ok(())
-	}
-	// macro gsub(p, o, r) {
-	// 	todo!()
-	// }
-	macro len(_, o, r) {
-		o.push_str(&r.collect::<Box<[char]>>().len().to_string());
-		Ok(())
-	}
-	macro lower(_, o, r) {
-		// assume it's ascii?
-		o.push_str(&r.collect::<String>().to_ascii_lowercase());
-		Ok(())
-	}
-	// macro rep(p, o, r) {
-	// 	todo!()
-	// }
-	macro reverse(_, o, r) {
-		let mut chs = r.collect::<Box<[char]>>();
-		chs.reverse();
-		chs.iter().for_each(|ch| o.push(*ch));
-		Ok(())
-	}
-	// macro sub(p, o, r) {
-	// 	todo!()
-	// }
-	macro upper(_, o, r) {
-		// assume it's ascii?
-		o.push_str(&r.collect::<String>().to_ascii_uppercase());
-		Ok(())
-	}
-	macro shescape(_, o, r) {
-		o.push('\'');
-		for ch in r {
-			if ch == '\'' {
-				o.push('\'');
-				o.push('\\');
-				o.push('\'');
-			}
-			o.push(ch);
-		}
-		o.push('\'');
-		Ok(())
-	}
+        let name = r.collect();
+        #[rustfmt::skip]
+        let Some(Some(m)) = p.macros.get(&name).map(|x| x.last()) else {
+            return Err(PE::MacroNotFound(name));
+        };
+        match m {
+            MacroType::Internal(_) => o.push_str("<builtin>"),
+            MacroType::Runtime { file, offset, len, s, .. } => {
+                // we can put anything as <R>
+                let mut csm: Consumer<std::fs::File> = Consumer::new(Arc::clone(s), None, Arc::clone(file));
+                csm.pos = *offset;
+                csm.end = *offset + len;
+                o.push_str(&csm.collect::<String>());
+            },
+        }
+        Ok(())
+    }
+    macro quote(_, o, r) {
+        o.push('"');
+        o.push_str(&r.collect::<String>());
+        o.push('"');
+        Ok(())
+    }
+    // macro gsub(p, o, r) {
+    //     todo!()
+    // }
+    macro len(_, o, r) {
+        o.push_str(&r.collect::<Box<[char]>>().len().to_string());
+        Ok(())
+    }
+    macro lower(_, o, r) {
+        // assume it's ascii?
+        o.push_str(&r.collect::<String>().to_ascii_lowercase());
+        Ok(())
+    }
+    // macro rep(p, o, r) {
+    //     todo!()
+    // }
+    macro reverse(_, o, r) {
+        let mut chs = r.collect::<Box<[char]>>();
+        chs.reverse();
+        chs.iter().for_each(|ch| o.push(*ch));
+        Ok(())
+    }
+    // macro sub(p, o, r) {
+    //     todo!()
+    // }
+    macro upper(_, o, r) {
+        // assume it's ascii?
+        o.push_str(&r.collect::<String>().to_ascii_uppercase());
+        Ok(())
+    }
+    macro shescape(_, o, r) {
+        o.push('\'');
+        for ch in r {
+            if ch == '\'' {
+                o.push('\'');
+                o.push('\\');
+                o.push('\'');
+            }
+            o.push(ch);
+        }
+        o.push('\'');
+        Ok(())
+    }
 	macro shrink(_, o, r) {
 		for ch in r.by_ref() {
 			if !ch.is_whitespace() {
