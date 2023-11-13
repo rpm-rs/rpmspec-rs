@@ -204,65 +204,65 @@ __internal_macros!(
         o.push('\'');
         Ok(())
     }
-	macro shrink(_, o, r) {
-		for ch in r.by_ref() {
-			if !ch.is_whitespace() {
-				o.push(ch);
-				break;
-			}
-		}
-		let mut space = false;
-		for ch in r {
-			if ch.is_whitespace() {
-				space = true;
-				continue;
-			}
-			if space {
-				space = false;
-				o.push(' ');
-			}
-			o.push(ch);
-		}
-		Ok(())
-	}
-	macro basename(_, o, r) {
-		// according to testing this has nothing to do with the `basename` command
-		let s: String = r.collect();
-		o.push_str(s.rsplit_once('/').map_or(&s, |(_, x)| x));
-		Ok(())
-	}
-	macro dirname(_, o, r) {
-		let s: String = r.collect();
-		o.push_str(s.rsplit_once('/').map_or(&s, |(x, _)| x));
-		Ok(())
-	}
-	macro exists(_, o, r) {
-		o.push(if Path::new(&*r.collect::<String>()).exists() { '1' } else { '0' });
-		Ok(())
-	}
-	macro suffix(_, o, r) {
-		let s: String = r.collect();
-		o.push_str(s.rsplit_once('.').map_or("", |(_, x)| x));
-		Ok(())
-	}
-	macro url2path(_, o, r) {
-		// ? https://github.com/rpm-software-management/rpm/blob/master/rpmio/url.c#L50
-		let s: String = r.collect();
-		#[rustfmt::skip]
-		let Ok(url) = url::Url::parse(&s) else {
-			o.push_str(&s);
-			return Ok(());
-		};
-		if matches!(url.scheme(), "https" | "http" | "hkp" | "file" | "ftp") {
-			o.push_str(url.path());
-		} else {
-			o.push_str(&s);
-		}
-		Ok(())
-	}
-	macro u2p(p, o, r) {
-		url2path(p, o, r)
-	}
+    macro shrink(_, o, r) {
+        for ch in r.by_ref() {
+            if !ch.is_whitespace() {
+                o.push(ch);
+                break;
+            }
+        }
+        let mut space = false;
+        for ch in r {
+            if ch.is_whitespace() {
+                space = true;
+                continue;
+            }
+            if space {
+                space = false;
+                o.push(' ');
+            }
+            o.push(ch);
+        }
+        Ok(())
+    }
+    macro basename(_, o, r) {
+        // according to testing this has nothing to do with the `basename` command
+        let s: String = r.collect();
+        o.push_str(s.rsplit_once('/').map_or(&s, |(_, x)| x));
+        Ok(())
+    }
+    macro dirname(_, o, r) {
+        let s: String = r.collect();
+        o.push_str(s.rsplit_once('/').map_or(&s, |(x, _)| x));
+        Ok(())
+    }
+    macro exists(_, o, r) {
+        o.push(if Path::new(&*r.collect::<String>()).exists() { '1' } else { '0' });
+        Ok(())
+    }
+    macro suffix(_, o, r) {
+        let s: String = r.collect();
+        o.push_str(s.rsplit_once('.').map_or("", |(_, x)| x));
+        Ok(())
+    }
+    macro url2path(_, o, r) {
+        // ? https://github.com/rpm-software-management/rpm/blob/master/rpmio/url.c#L50
+        let s: String = r.collect();
+        #[rustfmt::skip]
+        let Ok(url) = url::Url::parse(&s) else {
+            o.push_str(&s);
+            return Ok(());
+        };
+        if matches!(url.scheme(), "https" | "http" | "hkp" | "file" | "ftp") {
+            o.push_str(url.path());
+        } else {
+            o.push_str(&s);
+        }
+        Ok(())
+    }
+    macro u2p(p, o, r) {
+        url2path(p, o, r)
+    }
 	macro uncompress(_, o, r) {
 		use crate::tools::uncompress::CmprxFmt;
 		//? https://github.com/rpm-software-management/rpm/blob/master/tools/rpmuncompress.c#L69
