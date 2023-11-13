@@ -36,12 +36,12 @@ impl TryFrom<&Path> for CmprxFmt {
     fn try_from(value: &Path) -> Result<Self, Self::Error> {
         let mut buf: [u8; 6] = [0; 6];
         macro_rules! magic {
-			($x:ident: $($c:expr)+) => {
-				if buf.starts_with(&[$($c as u8, )+]) {
-					return Ok(Self::$x);
-				}
-			};
-		}
+            ($x:ident: $($c:expr)+) => {
+                if buf.starts_with(&[$($c as u8, )+]) {
+                    return Ok(Self::$x);
+                }
+            };
+        }
         let mut f = std::fs::File::open(value)?;
         f.read_exact(&mut buf)?;
         magic!(BZIP2: 'B' 'Z' 'h');
