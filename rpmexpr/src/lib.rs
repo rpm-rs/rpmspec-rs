@@ -56,86 +56,86 @@ pub enum Expr {
 
 #[rustfmt::skip]
 macro_rules! gen_chk {
-	($dollar:tt, $sp:ident) => {
-		macro_rules! typed_chk {
-			($a:ident:$l:ident $b:ident:$r:ident => $e:expr) => {{
-				let $a = $a.eval($sp)?;
-				Ok(match $a {
-					Expression::Ver($l) => {
-						let $b = $b.eval($sp)?;
-						let Expression::Ver($r) = $b else {
-							return Err(Err::TypeMismatch(Box::new(Expression::Ver($l)), Box::new($b)));
-						};
-						Expression::Num(i64::from($e))
-					}
-					Expression::Num($l) => {
-						let $b = $b.eval($sp)?;
-						let Expression::Num($r) = $b else {
-							return Err(Err::TypeMismatch(Box::new($a), Box::new($b)));
-						};
-						Expression::Num(i64::from($e))
-					}
-					Expression::Text($l) => {
-						let $b = $b.eval($sp)?;
-						let Expression::Text($r) = $b else {
-							return Err(Err::TypeMismatch(Box::new(Expression::Text($l)), Box::new($b)));
-						};
-						Expression::Num(i64::from($e))
-					}
-				})
-			}};
-		}
-		macro_rules! eval_type_chk {
-			($a:ident, $b:ident) => {
-				let $a = $a.eval($sp)?;
-				let $b = $b.eval($sp)?;
-				match $a {
-					Expression::Num(_) => {
-						let Expression::Num(_) = $b else {
-							return Err(Err::TypeMismatch(Box::new($a), Box::new($b)));
-						};
-					}
-					Expression::Text(_) => {
-						let Expression::Text(_) = $b else {
-							return Err(Err::TypeMismatch(Box::new($a), Box::new($b)));
-						};
-					}
-					Expression::Ver(_) => {
-						let Expression::Ver(_) = $b else {
-							return Err(Err::TypeMismatch(Box::new($a), Box::new($b)));
-						};
-					}
-				}
-			};
-		}
-		macro_rules! give {
-			// * Escaping `$` sign for nested macros
-			// Apparently `macro_rules` parses `$($e:expr)` while evaluating `gen_chk` and thinks
-			// that `$e` doesn't exist, so the code actually doesn't compile. What a design flaw!
-			// This is honestly a design flaw but I guess the rust developers are just stubborn and
-			// insist on calling this bug a feature. Guess that's understandable, have a great day!
-			// Anyway, to fix this we need to use `$dollar:tt` and call `gen_chk` with `$` so it
-			// expands correctly; also we can't use `$$` yet as the feature is still in nightly.
-			// See: https://veykril.github.io/tlborm/decl-macros/minutiae/metavar-expr.html
-			// * Why `@else` expands to `unreachable!()`
-			// The 2 `@else ...` branches here are used for checking if the `$()?` metavar is
-			// given. It goes to the second branch if provided, otherwise the first branch.
-			(@else) => { unreachable!() };
-			(@else $et:ident : $dollar($e:expr),+) => {
-				return Err(Err::$et($dollar(Box::new($e)),+));
-			};
-			($t:ident($x:ident) = $y:ident $dollar(else $et:ident : $dollar($e:expr),+)?) => {
-				//                         -------^^^^^^^^^^^^^^^^^^*******^^^^^^^^^^^^^
-				// This is optional, and if omitted, it should expand to `unreachable!();`
-				// when expanding `gen_chk` with `$dollar = $`:
-				// $(else $et:ident : $($e:expr),+)?
-				// -^^^^^^^^^^^^^^^^^^*^^^^^^^^^^^^^
-				let Expression::$t($x) = $y else {
-					give!(@else $dollar($et : $dollar($e),+)?);
-				};
-			};
-		}
-	};
+    ($dollar:tt, $sp:ident) => {
+        macro_rules! typed_chk {
+            ($a:ident:$l:ident $b:ident:$r:ident => $e:expr) => {{
+                let $a = $a.eval($sp)?;
+                Ok(match $a {
+                    Expression::Ver($l) => {
+                        let $b = $b.eval($sp)?;
+                        let Expression::Ver($r) = $b else {
+                            return Err(Err::TypeMismatch(Box::new(Expression::Ver($l)), Box::new($b)));
+                        };
+                        Expression::Num(i64::from($e))
+                    },
+                    Expression::Num($l) => {
+                        let $b = $b.eval($sp)?;
+                        let Expression::Num($r) = $b else {
+                            return Err(Err::TypeMismatch(Box::new($a), Box::new($b)));
+                        };
+                        Expression::Num(i64::from($e))
+                    },
+                    Expression::Text($l) => {
+                        let $b = $b.eval($sp)?;
+                        let Expression::Text($r) = $b else {
+                            return Err(Err::TypeMismatch(Box::new(Expression::Text($l)), Box::new($b)));
+                        };
+                        Expression::Num(i64::from($e))
+                    },
+                })
+            }};
+        }
+        macro_rules! eval_type_chk {
+            ($a:ident, $b:ident) => {
+                let $a = $a.eval($sp)?;
+                let $b = $b.eval($sp)?;
+                match $a {
+                    Expression::Num(_) => {
+                        let Expression::Num(_) = $b else {
+                            return Err(Err::TypeMismatch(Box::new($a), Box::new($b)));
+                        };
+                    },
+                    Expression::Text(_) => {
+                        let Expression::Text(_) = $b else {
+                            return Err(Err::TypeMismatch(Box::new($a), Box::new($b)));
+                        };
+                    },
+                    Expression::Ver(_) => {
+                        let Expression::Ver(_) = $b else {
+                            return Err(Err::TypeMismatch(Box::new($a), Box::new($b)));
+                        };
+                    },
+                }
+            };
+        }
+        macro_rules! give {
+            // * Escaping `$` sign for nested macros
+            // Apparently `macro_rules` parses `$($e:expr)` while evaluating `gen_chk` and thinks
+            // that `$e` doesn't exist, so the code actually doesn't compile. What a design flaw!
+            // This is honestly a design flaw but I guess the rust developers are just stubborn and
+            // insist on calling this bug a feature. Guess that's understandable, have a great day!
+            // Anyway, to fix this we need to use `$dollar:tt` and call `gen_chk` with `$` so it
+            // expands correctly; also we can't use `$$` yet as the feature is still in nightly.
+            // See: https://veykril.github.io/tlborm/decl-macros/minutiae/metavar-expr.html
+            // * Why `@else` expands to `unreachable!()`
+            // The 2 `@else ...` branches here are used for checking if the `$()?` metavar is
+            // given. It goes to the second branch if provided, otherwise the first branch.
+            (@else) => { unreachable!() };
+            (@else $et:ident : $dollar($e:expr),+) => {
+                return Err(Err::$et($dollar(Box::new($e)),+));
+            };
+            ($t:ident($x:ident) = $y:ident $dollar(else $et:ident : $dollar($e:expr),+)?) => {
+                //                         -------^^^^^^^^^^^^^^^^^^*******^^^^^^^^^^^^^
+                // This is optional, and if omitted, it should expand to `unreachable!();`
+                // when expanding `gen_chk` with `$dollar = $`:
+                // $(else $et:ident : $($e:expr),+)?
+                // -^^^^^^^^^^^^^^^^^^*^^^^^^^^^^^^^
+                let Expression::$t($x) = $y else {
+                    give!(@else $dollar($et : $dollar($e),+)?);
+                };
+            };
+        }
+    };
 }
 
 impl Expr {
