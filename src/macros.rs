@@ -37,15 +37,15 @@ impl std::fmt::Debug for MacroType {
 		match self {
 			Self::Internal(_) => f.write_str("<builtin>")?,
 			Self::Runtime { offset, len, s, .. } => f.write_str(&s.read()[*offset..offset + len])?,
-		}
+        }
 		Ok(())
-	}
+    }
 }
 
 impl From<&str> for MacroType {
-	fn from(value: &str) -> Self {
+    fn from(value: &str) -> Self {
 		Self::Runtime { file: Arc::from(Path::new("unknown")), offset: 0, s: Arc::new(RwLock::new(value.into())), param: false, len: value.len() }
-	}
+    }
 }
 
 macro_rules! __internal_macros {
