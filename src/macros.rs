@@ -34,17 +34,17 @@ pub enum MacroType {
 
 impl std::fmt::Debug for MacroType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-	match self {
-	    Self::Internal(_) => f.write_str("<builtin>")?,
-	    Self::Runtime { offset, len, s, .. } => f.write_str(&s.read()[*offset..offset + len])?,
-	}
-	Ok(())
+        match self {
+            Self::Internal(_) => f.write_str("<builtin>")?,
+            Self::Runtime { offset, len, s, .. } => f.write_str(&s.read()[*offset..offset + len])?,
+        }
+        Ok(())
     }
 }
 
 impl From<&str> for MacroType {
     fn from(value: &str) -> Self {
-	Self::Runtime { file: Arc::from(Path::new("unknown")), offset: 0, s: Arc::new(RwLock::new(value.into())), param: false, len: value.len() }
+        Self::Runtime { file: Arc::from(Path::new("unknown")), offset: 0, s: Arc::new(RwLock::new(value.into())), param: false, len: value.len() }
     }
 }
 

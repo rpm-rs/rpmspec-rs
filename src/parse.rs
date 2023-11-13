@@ -565,7 +565,9 @@ impl RPMFiles {
             .captures_iter(&self.raw)
             .map(|cap| {
                 if let Some(remain) = &cap[0].strip_prefix("%defattr(") {
-                    let Some(remain) = remain.trim_end().strip_suffix(')') else { return Err(eyre!("Closing `)` not found for `%defattr(`")); };
+                    let Some(remain) = remain.trim_end().strip_suffix(')') else {
+                        return Err(eyre!("Closing `)` not found for `%defattr(`"));
+                    };
                     let ss: Box<[&str]> = remain.split(',').map(str::trim).collect();
                     let [filemode, user, group, dirmode] = match *ss {
                         [filemode, user, group] => [filemode, user, group, ""],
@@ -814,7 +816,7 @@ pub struct RPMSpecPkg {
     /// Scriptlets present in the final RPM package, such as `%post [-n] ...` and `%pretrans [-n] ...`
     pub scriptlets: Scriptlets, // todo
 
-    // todo: BuildArch and stuff
+                                // todo: BuildArch and stuff
 }
 
 /// Represents the entire spec file.
@@ -1249,8 +1251,8 @@ impl SpecParser {
     /// - Cannot unwrap static [`Regex`] (0% chance of happening)
     pub fn load_macro_from_file(&mut self, path: &std::path::Path) -> Result<()> {
         lazy_static::lazy_static! {
-			static ref RE: Regex = Regex::new(r"(?m)^%([\w()]+)[\t ]+((\\\n|[^\n])+)$").unwrap();
-		}
+            static ref RE: Regex = Regex::new(r"(?m)^%([\w()]+)[\t ]+((\\\n|[^\n])+)$").unwrap();
+        }
         let file = Arc::from(path);
         debug!("Loading macros from {}", path.display());
         let mut buf = vec![];
@@ -1311,51 +1313,59 @@ impl SpecParser {
             "if" => {
                 let c = remain.parse().map_or(true, |n: isize| n != 0);
                 self.cond.push((c, c));
-            }
+            },
             "ifarch" => {
                 let c = remain == Self::arch()?;
                 self.cond.push((c, c));
-            }
+            },
             "ifnarch" => {
                 let c = remain != Self::arch()?;
                 self.cond.push((c, c));
-            }
+            },
             "elifarch" => {
-                let Some((a, b)) = self.cond.last_mut() else { return Err(eyre!("%elifarch found without %if/%ifarch")); };
+                let Some((a, b)) = self.cond.last_mut() else {
+                    return Err(eyre!("%elifarch found without %if/%ifarch"));
+                };
                 if *b {
                     *a = false;
                 } else {
                     *a = remain == Self::arch()?;
                     *b = *a;
                 }
-            }
+            },
             "elifnarch" => {
-                let Some((a, b)) = self.cond.last_mut() else { return Err(eyre!("%elifarch found without %if/%ifarch")); };
+                let Some((a, b)) = self.cond.last_mut() else {
+                    return Err(eyre!("%elifarch found without %if/%ifarch"));
+                };
                 if *b {
                     *a = false;
                 } else {
                     *a = remain != Self::arch()?;
                     *b = *a;
                 }
-            }
+            },
             "elif" => {
-                let Some((a, b)) = self.cond.last_mut() else { return Err(eyre!("%elif found without %if")); };
+                let Some((a, b)) = self.cond.last_mut() else {
+                    return Err(eyre!("%elif found without %if"));
+                };
                 if *b {
                     *a = false;
                 } else {
                     *a = remain.parse().map_or(true, |n: isize| n != 0);
                     *b = *a;
                 }
-            }
+            },
             "else" => {
-                let Some((a, b)) = self.cond.last_mut() else { return Err(eyre!("%else found without %if")); };
+                let Some((a, b)) = self.cond.last_mut() else {
+                    return Err(eyre!("%else found without %if"));
+                };
                 if *b {
                     *a = false;
                 } else {
                     *a = !(*a);
                     // *b = *a; (doesn't matter)
                 }
-            }
+            },
             "endif" => return if self.cond.pop().is_none() { Err(eyre!("%endif found without %if")) } else { Ok(true) },
             _ => return Ok(false),
         }
@@ -1420,7 +1430,7 @@ impl SpecParser {
                 }
                 self.rpm.packages.insert(name.clone(), RPMSpecPkg::default());
                 RPMSection::Package(name)
-            }
+            },
             "prep" => RPMSection::Prep,
             "build" => RPMSection::Build,
             "install" => RPMSection::Install,
@@ -1440,7 +1450,7 @@ impl SpecParser {
                                     return Err(eyre!("Unexpected duplicated `-f`").note(format!("Old: {old}")).note(format!("New: {next}")));
                                 }
                                 f = Some(next.into());
-                            }
+                            },
                             "n" => {
                                 let Some(next) = remains.next() else {
                                     return Err(eyre!("Expected argument for %files after `-n`"));
@@ -1452,7 +1462,7 @@ impl SpecParser {
                                     return Err(eyre!("The name of the subpackage is already set.").note(format!("Old: {name}")).note(format!("New: {next}")));
                                 }
                                 name = next.into();
-                            }
+                            },
                             _ => return Err(eyre!("Unexpected flag `-{flag}` for %files")),
                         }
                     } else {
@@ -1463,7 +1473,7 @@ impl SpecParser {
                     }
                 }
                 RPMSection::Files(name, f)
-            }
+            },
             "changelog" => RPMSection::Changelog,
             _ => return Ok(false),
         };
@@ -1514,7 +1524,7 @@ impl SpecParser {
                     let digit = strdigit.parse()?;
                     let name = &cap[1][..cap[1].len() - strdigit.len()];
                     self.add_list_preamble(name, digit, &cap[2])?;
-                }
+                },
                 RPMSection::Description(ref mut p) => {
                     if p.is_empty() {
                         self.rpm.description.push_str(line);
@@ -1524,19 +1534,19 @@ impl SpecParser {
                     let p = self.rpm.packages.get_mut(p).expect("BUG: no subpackage at %description");
                     p.description.push_str(line);
                     p.description.push('\n');
-                }
+                },
                 RPMSection::Prep => {
                     self.rpm.prep.push_str(line);
                     self.rpm.prep.push('\n');
-                }
+                },
                 RPMSection::Build => {
                     self.rpm.build.push_str(line);
                     self.rpm.build.push('\n');
-                }
+                },
                 RPMSection::Install => {
                     self.rpm.install.push_str(line);
                     self.rpm.install.push('\n');
-                }
+                },
                 RPMSection::Files(ref mut p, ref mut f) => {
                     if let Some(f) = f {
                         if p.is_empty() && self.rpm.files.incl.is_empty() {
@@ -1556,11 +1566,11 @@ impl SpecParser {
                     let p = self.rpm.packages.get_mut(p).expect("BUG: no subpackage at %files");
                     p.files.raw.push_str(line);
                     p.files.raw.push('\n');
-                }
+                },
                 RPMSection::Changelog => {
                     self.rpm.changelog.raw.push_str(line);
                     self.rpm.changelog.raw.push('\n');
-                }
+                },
             }
         }
         if !self.errors.is_empty() {
@@ -1589,12 +1599,12 @@ impl SpecParser {
         let value = value;
         let rpm = &mut self.rpm;
         macro_rules! no_override_ins {
-			($attr:ident) => {{
-				if let Some(old) = rpm.$attr.insert(digit, value.into()) {
-					error!("Overriding preamble `{name}{digit}` value `{old}` -> `{value}`");
-				}
-			}};
-		}
+            ($attr:ident) => {{
+                if let Some(old) = rpm.$attr.insert(digit, value.into()) {
+                    error!("Overriding preamble `{name}{digit}` value `{old}` -> `{value}`");
+                }
+            }};
+        }
         match name {
             "Source" => no_override_ins!(sources),
             "Patch" => no_override_ins!(patches),
@@ -1674,7 +1684,7 @@ impl SpecParser {
                     }
                     rpm.name = Some(value);
                     return Ok(());
-                }
+                },
                 "Summary" => {
                     if !rpm.summary.is_empty() {
                         warn!("overriding existing Summary preamble value `{}` to `{value}`", rpm.summary);
@@ -1682,7 +1692,7 @@ impl SpecParser {
                     }
                     rpm.summary = value;
                     return Ok(());
-                }
+                },
                 "Provides" => return Package::add_query(&mut rpm.provides, &value),
                 "Obsoletes" => return Package::add_query(&mut rpm.obsoletes, &value),
                 "Conflicts" => return Package::add_query(&mut rpm.conflicts, &value),
@@ -1690,7 +1700,7 @@ impl SpecParser {
                 "Recommends" => return Package::add_simple_query(&mut rpm.recommends, &value),
                 "Enhances" => return Package::add_simple_query(&mut rpm.enhances, &value),
                 "Supplements" => return Package::add_simple_query(&mut rpm.supplements, &value),
-                _ => {} // get to global below
+                _ => {}, // get to global below
             }
         }
 
@@ -1732,12 +1742,12 @@ impl SpecParser {
         let (mut content, mut quotes, mut flags) = (String::new(), String::new(), vec![]);
         gen_read_helper!(reader quotes);
         macro_rules! exit {
-			() => {
-				exit_chk!();
-				let args = content.split(' ').filter(|x| !x.starts_with('-')).map(|x| x.into()).collect();
-				return Ok((content, args, flags));
-			};
-		}
+            () => {
+                exit_chk!();
+                let args = content.split(' ').filter(|x| !x.starts_with('-')).map(|x| x.into()).collect();
+                return Ok((content, args, flags));
+            };
+        }
         // if there's a space, it's `%macro_name ...`
         // otherwise it's most likely `%{macro_name:...}`
         // but yeah we'll have to trim it anyway
@@ -1827,7 +1837,7 @@ impl SpecParser {
             return Err(eyre!("Unexpected EOF while parsing `%{{...`"));
         }
         #[allow(clippy::option_if_let_else)] // WARN refactor fail count: 2
-            let notflag = if let Some(x) = content.strip_prefix('!') {
+        let notflag = if let Some(x) = content.strip_prefix('!') {
             content = x.into();
             true
         } else {
@@ -1880,11 +1890,11 @@ impl SpecParser {
         let mut quotes = String::new();
         gen_read_helper!(def quotes);
         macro_rules! exit {
-			() => {
-				exit_chk!();
-				return Ok(());
-			};
-		}
+            () => {
+                exit_chk!();
+                return Ok(());
+            };
+        }
         while let Some(ch) = def.next() {
             if ch != '%' {
                 textproc::chk_ps(&mut quotes, ch)?;
@@ -1919,13 +1929,13 @@ impl SpecParser {
                             Ok(n) => args.get(n - 1),
                             Err(e) => return Err(eyre!("Cannot parse macro param `%{macroname}`: {e}")),
                         }
-                            .unwrap_or(&String::new()),
+                        .unwrap_or(&String::new()),
                     );
-                }
+                },
                 _ => {
                     def.back();
                     self._use_raw_macro(out, def)?;
-                }
+                },
             }
         }
         exit!();
@@ -1933,8 +1943,12 @@ impl SpecParser {
 
     pub(crate) fn _rp_macro<R: Read>(&mut self, name: &str, reader: &mut Consumer<R>, out: &mut String) -> Result<(), Err> {
         debug!("getting %{name}");
-        let Some(def) = self.macros.get(name) else { return Err(Err::MacroNotFound(name.into())); };
-        let Some(def) = def.last() else { return Err(Err::MacroUndefined(name.into())); };
+        let Some(def) = self.macros.get(name) else {
+            return Err(Err::MacroNotFound(name.into()));
+        };
+        let Some(def) = def.last() else {
+            return Err(Err::MacroUndefined(name.into()));
+        };
         match def {
             MacroType::Runtime { file, offset, s, param, len } => {
                 let mut csm: Consumer<R> = Consumer::new(Arc::clone(s), None, Arc::clone(file));
@@ -1944,7 +1958,7 @@ impl SpecParser {
                     return self._param_macro(name, &mut csm, reader, out).map_err(Into::into);
                 }
                 self.parse_macro(out, &mut csm).map_err(Into::into)
-            }
+            },
             MacroType::Internal(f) => {
                 // * What is this gigantic mess??
                 // `f()` in enum item `MacroType::Internal` does not allow `impl`. But don't worry,
@@ -1978,7 +1992,7 @@ impl SpecParser {
                 });
                 reader.pos = newreader.pos;
                 Ok(())
-            }
+            },
         }
     }
 
@@ -1994,14 +2008,14 @@ impl SpecParser {
                 Ok(out) if out.status.success() => {
                     strout.push_str(core::str::from_utf8(&out.stdout)?.trim_end_matches('\n'));
                     return Ok(());
-                }
+                },
                 Ok(out) => eyre!("Shell expansion command did not succeed")
                     .note(out.status.code().map_or("No status code".into(), |c| format!("Status code: {c}")))
                     .section(std::string::String::from_utf8(out.stdout)?.header("Stdout:"))
                     .section(std::string::String::from_utf8(out.stderr)?.header("Stderr:")),
                 Err(e) => eyre!(e).wrap_err("Shell expansion failed"),
             })
-                .note(shellcmd);
+            .note(shellcmd);
         }
         Err(eyre!("Unexpected end of shell expansion command: `%({shellcmd}`"))
     }
@@ -2032,7 +2046,7 @@ impl SpecParser {
                 } else {
                     format!("%{name}")
                 }
-                    .into()
+                .into()
             },
             |_| buf,
         ));
@@ -2048,21 +2062,21 @@ impl SpecParser {
         while let Some(ch) = chars.next() {
             match textproc::flag(&mut question, &mut notflag, &mut first, ch) {
                 Some(true) => continue,
-                Some(false) => {}
+                Some(false) => {},
                 None => {
                     // %abc?...
                     //  └┬┘└─── stop
                     //   └ macro name
                     chars.back();
                     break;
-                }
+                },
             }
             textproc::chk_ps(&mut quotes, ch)?; // we read until we encounter '}' or ':' or the end
             match ch {
                 '{' | '[' | '(' if !content.is_empty() => {
                     textproc::back(chars, &mut quotes, ch)?;
                     break;
-                }
+                },
                 '{' => {
                     let mut name = String::new();
                     while let Some(ch) = chars.next() {
@@ -2093,13 +2107,13 @@ impl SpecParser {
                         }
                         match textproc::flag(&mut question, &mut notflag, &mut first, ch) {
                             Some(true) => continue,
-                            Some(false) => {}
+                            Some(false) => {},
                             None => return Err(eyre!("Unexpected flag `{ch}` in %{{...?...}}").into()),
                         }
                         name.push(ch);
                     }
                     return Err(eyre!("EOF while parsing `%{{...`").into());
-                }
+                },
                 '[' => {
                     if notflag || question {
                         error!("flags (! and ?) are not supported for %[].");
@@ -2113,23 +2127,23 @@ impl SpecParser {
                         return self.parse_expr(out, &mut chars.range(start..chars.pos - 1).expect("Cannot unwind consumer to `%[...]`"));
                     }
                     return Err(eyre!("EOF but `%[...` is not ended with `]`").into());
-                }
+                },
                 '(' => {
                     if notflag || question {
                         error!("flags (! and ?) are not supported for %().");
                     }
                     Self::__rawm_shellexpand(out, chars, quotes)?;
                     return Ok(());
-                }
+                },
                 '%' if first => {
                     out.push('%');
                     return Ok(());
-                }
+                },
                 _ if !(ch.is_ascii_alphanumeric() || ch == '_') => {
                     textproc::back(chars, &mut quotes, ch)?;
                     break;
-                }
-                _ => {}
+                },
+                _ => {},
             }
             first = false;
             content.push(ch);

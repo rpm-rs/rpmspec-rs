@@ -13,45 +13,45 @@ use std::str::FromStr;
 /// See <https://rpm-software-management.github.io/rpm/manual/macros.html#expression-expansion>
 #[derive(Clone)]
 pub enum Expr {
-	/// Literals
-	Out(Expression),
+    /// Literals
+    Out(Expression),
 
-	/// Represents an RPM macro
-	Macro(String),
+    /// Represents an RPM macro
+    Macro(String),
 
-	/// `-...`
-	Neg(Box<Expr>),
-	/// `!...`
-	Not(Box<Expr>),
-	/// `... && ...`
-	And(Box<Expr>, Box<Expr>),
-	/// `... || ...`
-	Or(Box<Expr>, Box<Expr>),
+    /// `-...`
+    Neg(Box<Expr>),
+    /// `!...`
+    Not(Box<Expr>),
+    /// `... && ...`
+    And(Box<Expr>, Box<Expr>),
+    /// `... || ...`
+    Or(Box<Expr>, Box<Expr>),
 
-	/// `... != ...`
-	Ne(Box<Expr>, Box<Expr>),
-	/// `... == ...`
-	Eq(Box<Expr>, Box<Expr>),
-	/// `... < ...`
-	Lt(Box<Expr>, Box<Expr>),
-	/// `... > ...`
-	Gt(Box<Expr>, Box<Expr>),
-	/// `... <= ...`
-	Le(Box<Expr>, Box<Expr>),
-	/// `... >= ...`
-	Ge(Box<Expr>, Box<Expr>),
+    /// `... != ...`
+    Ne(Box<Expr>, Box<Expr>),
+    /// `... == ...`
+    Eq(Box<Expr>, Box<Expr>),
+    /// `... < ...`
+    Lt(Box<Expr>, Box<Expr>),
+    /// `... > ...`
+    Gt(Box<Expr>, Box<Expr>),
+    /// `... <= ...`
+    Le(Box<Expr>, Box<Expr>),
+    /// `... >= ...`
+    Ge(Box<Expr>, Box<Expr>),
 
-	/// `... + ...`
-	Add(Box<Expr>, Box<Expr>),
-	/// `... - ...`
-	Sub(Box<Expr>, Box<Expr>),
-	/// `... / ...`
-	Div(Box<Expr>, Box<Expr>),
-	/// `... * ...`
-	Mul(Box<Expr>, Box<Expr>),
+    /// `... + ...`
+    Add(Box<Expr>, Box<Expr>),
+    /// `... - ...`
+    Sub(Box<Expr>, Box<Expr>),
+    /// `... / ...`
+    Div(Box<Expr>, Box<Expr>),
+    /// `... * ...`
+    Mul(Box<Expr>, Box<Expr>),
 
-	/// `... ? ... : ...`
-	Ter(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// `... ? ... : ...`
+    Ter(Box<Expr>, Box<Expr>, Box<Expr>),
 }
 
 #[rustfmt::skip]
@@ -139,187 +139,187 @@ macro_rules! gen_chk {
 }
 
 impl Expr {
-	/// Returns a parser than can take in a &str and returns [`Expr`].
-	///
-	/// # Examples
-	/// ```
-	/// use rpmspec_rs::tools::expr::Expr;
-	///
-	/// assert_eq!(Expr::parser().parse("1 + 1").and_then(|x| x.eval()), Ok(2));
-	/// ```
-	///
-	/// # Panics
-	/// - Cannot parse identified integers (0% chance of happening)
-	#[must_use]
-	pub fn parser() -> impl Parser<char, Self, Error = Simple<char>> {
-		recursive(|expr| {
-			let n = text::int(10).map(|s: std::string::String| Self::Out(Expression::Num(s.parse().unwrap()))).padded();
-			let atom = n.or(expr.delimited_by(just('('), just(')')));
-			let op = |c| just(c).padded();
+    /// Returns a parser than can take in a &str and returns [`Expr`].
+    ///
+    /// # Examples
+    /// ```
+    /// use rpmspec_rs::tools::expr::Expr;
+    ///
+    /// assert_eq!(Expr::parser().parse("1 + 1").and_then(|x| x.eval()), Ok(2));
+    /// ```
+    ///
+    /// # Panics
+    /// - Cannot parse identified integers (0% chance of happening)
+    #[must_use]
+    pub fn parser() -> impl Parser<char, Self, Error = Simple<char>> {
+        recursive(|expr| {
+            let n = text::int(10).map(|s: std::string::String| Self::Out(Expression::Num(s.parse().unwrap()))).padded();
+            let atom = n.or(expr.delimited_by(just('('), just(')')));
+            let op = |c| just(c).padded();
 
-			let string = just('"')
-				.ignore_then(none_of('"').repeated())
-				.then_ignore(just('"'))
-				.collect::<Vec<_>>()
-				.map(|v| {
-					let mut s = String::new();
-					v.into_iter().for_each(|c| s.push(c));
-					Self::Out(Expression::Text(s))
-				})
-				.padded();
+            let string = just('"')
+                .ignore_then(none_of('"').repeated())
+                .then_ignore(just('"'))
+                .collect::<Vec<_>>()
+                .map(|v| {
+                    let mut s = String::new();
+                    v.into_iter().for_each(|c| s.push(c));
+                    Self::Out(Expression::Text(s))
+                })
+                .padded();
 
-			let ver = just("v\"")
-				.ignore_then(none_of('"').repeated())
-				.then_ignore(just('"'))
-				.collect::<Vec<_>>()
-				.try_map(|v, span| {
-					Ok(Self::Out(Expression::Ver(Version::from_str(&v.into_iter().collect::<String>()).map_err(|e| Simple::custom(span, format!("Error when parsing version: {e:?}")))?)))
-				})
-				.padded();
+            let ver = just("v\"")
+                .ignore_then(none_of('"').repeated())
+                .then_ignore(just('"'))
+                .collect::<Vec<_>>()
+                .try_map(|v, span| {
+                    Ok(Self::Out(Expression::Ver(Version::from_str(&v.into_iter().collect::<String>()).map_err(|e| Simple::custom(span, format!("Error when parsing version: {e:?}")))?)))
+                })
+                .padded();
 
-			let atom = atom.or(string).or(ver);
+            let atom = atom.or(string).or(ver);
 
-			let macros = just('%')
-				.ignore_then(
-					text::ident().or(text::ident().delimited_by(just('{'), just('}'))).or(text::ident().delimited_by(just('['), just(']'))).or(text::ident().delimited_by(just('('), just(')'))),
-				)
-				.map(String::from)
-				.map(Expr::Macro as fn(_) -> _);
+            let macros = just('%')
+                .ignore_then(
+                    text::ident().or(text::ident().delimited_by(just('{'), just('}'))).or(text::ident().delimited_by(just('['), just(']'))).or(text::ident().delimited_by(just('('), just(')'))),
+                )
+                .map(String::from)
+                .map(Expr::Macro as fn(_) -> _);
 
-			let atom = atom.or(macros);
+            let atom = atom.or(macros);
 
-			let unary = op('-').repeated().then(atom.clone()).foldr(|_, r| Self::Neg(Box::new(r))).or(op('!').repeated().then(atom).foldr(|_, r| Self::Not(Box::new(r))));
-			let muldiv = unary.clone().then(op('*').to(Expr::Mul as fn(_, _) -> _).or(op('/').to(Expr::Div as fn(_, _) -> _)).then(unary).repeated()).foldl(|l, (op, r)| op(Box::new(l), Box::new(r)));
-			let addsub =
-				muldiv.clone().then(op('+').to(Expr::Add as fn(_, _) -> _).or(op('-').to(Expr::Sub as fn(_, _) -> _)).then(muldiv).repeated()).foldl(|l, (op, r)| op(Box::new(l), Box::new(r)));
-			macro_rules! cmpop {
+            let unary = op('-').repeated().then(atom.clone()).foldr(|_, r| Self::Neg(Box::new(r))).or(op('!').repeated().then(atom).foldr(|_, r| Self::Not(Box::new(r))));
+            let muldiv = unary.clone().then(op('*').to(Expr::Mul as fn(_, _) -> _).or(op('/').to(Expr::Div as fn(_, _) -> _)).then(unary).repeated()).foldl(|l, (op, r)| op(Box::new(l), Box::new(r)));
+            let addsub =
+                muldiv.clone().then(op('+').to(Expr::Add as fn(_, _) -> _).or(op('-').to(Expr::Sub as fn(_, _) -> _)).then(muldiv).repeated()).foldl(|l, (op, r)| op(Box::new(l), Box::new(r)));
+            macro_rules! cmpop {
 				($s:expr, $item:expr $(;$ss:expr, $ii:expr)*) => {{
 					just($s).padded().to($item as fn(_, _) -> _)
 					$(.or(cmpop!($ss, $ii)))*
 				}};
 			}
-			let cmp = addsub
-				.clone()
-				.then(cmpop!("!=", Expr::Ne; "==", Expr::Eq; '<', Expr::Lt; '>', Expr::Gt; "<=", Expr::Le; ">=", Expr::Ge).then(addsub).repeated())
-				.foldl(|l, (op, r)| op(Box::new(l), Box::new(r)));
-			cmp.clone().then(cmpop!("&&", Expr::And; "||", Expr::Or).then(cmp).repeated()).foldl(|l, (op, r)| op(Box::new(l), Box::new(r)))
-		})
-		.then_ignore(end())
-	}
-	/// Evaluates an [`Expr`] to [`Expression`].
-	///
-	/// # Examples
-	///
-	/// ```
-	/// use rpmspec_rs::tools::expr::{Expr, Expression};
-	///
-	/// let expr = Expr::Out(Expression::Text("hai"));
-	/// assert_eq!(expr.eval(), Ok(Expression::Text("hai")));
-	/// ```
-	///
-	/// # Errors
-	/// Invalid expression
-	#[allow(clippy::cognitive_complexity)] // weird to split it apart
-	pub fn eval(self, sp: &mut impl FnMut(&mut String, String) -> Result<(), PE>) -> Result<Expression, Err> {
-		gen_chk!($, sp);
-		match self {
-			Self::Out(expr) => Ok(expr),
-			Self::Macro(m) => {
-				let mut out = String::new();
-				sp(&mut out, m)?;
-				match Self::parser().parse(&*out)? {
-					Self::Out(x) => Ok(x),
-					_ => Err(eyre!("Bad Expression: `{out}`").into()),
-				}
-			},
-			Self::Neg(num) => {
-				let num = num.eval(sp)?;
-				give!(Num(n) = num else NotNum: num);
-				Ok(Expression::Num(-n))
-			},
-			Self::Not(num) => Ok(Expression::Num(match num.eval(sp)? {
-				Expression::Ver(_) => 1,
-				Expression::Num(n) => i64::from(n == 0),
-				Expression::Text(s) => i64::from(s.is_empty()),
-			})),
-			Self::And(a, b) => {
-				eval_type_chk!(a, b);
-				Ok(match a {
-					Expression::Ver(_) => a,
-					Expression::Num(l) => {
-						give!(Num(r) = b);
-						Expression::Num(if l != 0 && r != 0 { r } else { 0 })
-					},
-					Expression::Text(l) => {
-						give!(Text(r) = b);
-						Expression::Text(if !l.is_empty() && !r.is_empty() { r } else { "".into() })
-					},
-				})
-			},
-			Self::Or(a, b) => {
-				eval_type_chk!(a, b);
-				Ok(match a {
-					Expression::Ver(_) => b,
-					Expression::Num(l) => {
-						give!(Num(r) = b);
-						Expression::Num(if l != 0 {
-							l
-						} else if r != 0 {
-							r
-						} else {
-							0
-						})
-					},
-					Expression::Text(l) => {
-						give!(Text(r) = b);
-						Expression::Text(if !l.is_empty() {
-							l
-						} else if !r.is_empty() {
-							r
-						} else {
-							"".into()
-						})
-					},
-				})
-			},
-			Self::Ne(a, b) => typed_chk!(a:l b:r => l != r),
-			Self::Eq(a, b) => typed_chk!(a:l b:r => l == r),
-			Self::Lt(a, b) => typed_chk!(a:l b:r => l < r),
-			Self::Gt(a, b) => typed_chk!(a:l b:r => l > r),
-			Self::Le(a, b) => typed_chk!(a:l b:r => l <= r),
-			Self::Ge(a, b) => typed_chk!(a:l b:r => l >= r),
-			Self::Add(a, b) => {
-				eval_type_chk!(a, b);
-				if let Expression::Num(l) = a {
-					give!(Num(r) = b);
-					return Ok(Expression::Num(l + r));
-				}
-				let Expression::Text(l) = a else { return Err(Err::NoAdd(Box::new(a))) };
-				give!(Text(r) = b);
-				Ok(Expression::Text(format!("{l}{r}").into()))
-			},
-			Self::Sub(a, b) => Self::Add(a, Box::new(Self::Neg(b))).eval(sp),
-			Self::Div(a, b) => {
-				eval_type_chk!(a, b);
-				give!(Num(l) = a else NoMulDiv: a);
-				give!(Num(r) = b);
-				Ok(Expression::Num(l / r))
-			},
-			Self::Mul(a, b) => {
-				eval_type_chk!(a, b);
-				give!(Num(l) = a else NoMulDiv: a);
-				give!(Num(r) = b);
-				Ok(Expression::Num(l * r))
-			},
-			Self::Ter(cond, yes, no) => {
-				let cond = match cond.eval(sp)? {
-					Expression::Num(n) => n != 0,
-					Expression::Text(s) => !s.is_empty(),
-					Expression::Ver(_) => false,
-				};
-				eval_type_chk!(yes, no);
-				Ok(if cond { yes } else { no })
-			},
-		}
-	}
+            let cmp = addsub
+                .clone()
+                .then(cmpop!("!=", Expr::Ne; "==", Expr::Eq; '<', Expr::Lt; '>', Expr::Gt; "<=", Expr::Le; ">=", Expr::Ge).then(addsub).repeated())
+                .foldl(|l, (op, r)| op(Box::new(l), Box::new(r)));
+            cmp.clone().then(cmpop!("&&", Expr::And; "||", Expr::Or).then(cmp).repeated()).foldl(|l, (op, r)| op(Box::new(l), Box::new(r)))
+        })
+        .then_ignore(end())
+    }
+    /// Evaluates an [`Expr`] to [`Expression`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rpmspec_rs::tools::expr::{Expr, Expression};
+    ///
+    /// let expr = Expr::Out(Expression::Text("hai"));
+    /// assert_eq!(expr.eval(), Ok(Expression::Text("hai")));
+    /// ```
+    ///
+    /// # Errors
+    /// Invalid expression
+    #[allow(clippy::cognitive_complexity)] // weird to split it apart
+    pub fn eval(self, sp: &mut impl FnMut(&mut String, String) -> Result<(), PE>) -> Result<Expression, Err> {
+        gen_chk!($, sp);
+        match self {
+            Self::Out(expr) => Ok(expr),
+            Self::Macro(m) => {
+                let mut out = String::new();
+                sp(&mut out, m)?;
+                match Self::parser().parse(&*out)? {
+                    Self::Out(x) => Ok(x),
+                    _ => Err(eyre!("Bad Expression: `{out}`").into()),
+                }
+            },
+            Self::Neg(num) => {
+                let num = num.eval(sp)?;
+                give!(Num(n) = num else NotNum: num);
+                Ok(Expression::Num(-n))
+            },
+            Self::Not(num) => Ok(Expression::Num(match num.eval(sp)? {
+                Expression::Ver(_) => 1,
+                Expression::Num(n) => i64::from(n == 0),
+                Expression::Text(s) => i64::from(s.is_empty()),
+            })),
+            Self::And(a, b) => {
+                eval_type_chk!(a, b);
+                Ok(match a {
+                    Expression::Ver(_) => a,
+                    Expression::Num(l) => {
+                        give!(Num(r) = b);
+                        Expression::Num(if l != 0 && r != 0 { r } else { 0 })
+                    },
+                    Expression::Text(l) => {
+                        give!(Text(r) = b);
+                        Expression::Text(if !l.is_empty() && !r.is_empty() { r } else { "".into() })
+                    },
+                })
+            },
+            Self::Or(a, b) => {
+                eval_type_chk!(a, b);
+                Ok(match a {
+                    Expression::Ver(_) => b,
+                    Expression::Num(l) => {
+                        give!(Num(r) = b);
+                        Expression::Num(if l != 0 {
+                            l
+                        } else if r != 0 {
+                            r
+                        } else {
+                            0
+                        })
+                    },
+                    Expression::Text(l) => {
+                        give!(Text(r) = b);
+                        Expression::Text(if !l.is_empty() {
+                            l
+                        } else if !r.is_empty() {
+                            r
+                        } else {
+                            "".into()
+                        })
+                    },
+                })
+            },
+            Self::Ne(a, b) => typed_chk!(a:l b:r => l != r),
+            Self::Eq(a, b) => typed_chk!(a:l b:r => l == r),
+            Self::Lt(a, b) => typed_chk!(a:l b:r => l < r),
+            Self::Gt(a, b) => typed_chk!(a:l b:r => l > r),
+            Self::Le(a, b) => typed_chk!(a:l b:r => l <= r),
+            Self::Ge(a, b) => typed_chk!(a:l b:r => l >= r),
+            Self::Add(a, b) => {
+                eval_type_chk!(a, b);
+                if let Expression::Num(l) = a {
+                    give!(Num(r) = b);
+                    return Ok(Expression::Num(l + r));
+                }
+                let Expression::Text(l) = a else { return Err(Err::NoAdd(Box::new(a))) };
+                give!(Text(r) = b);
+                Ok(Expression::Text(format!("{l}{r}").into()))
+            },
+            Self::Sub(a, b) => Self::Add(a, Box::new(Self::Neg(b))).eval(sp),
+            Self::Div(a, b) => {
+                eval_type_chk!(a, b);
+                give!(Num(l) = a else NoMulDiv: a);
+                give!(Num(r) = b);
+                Ok(Expression::Num(l / r))
+            },
+            Self::Mul(a, b) => {
+                eval_type_chk!(a, b);
+                give!(Num(l) = a else NoMulDiv: a);
+                give!(Num(r) = b);
+                Ok(Expression::Num(l * r))
+            },
+            Self::Ter(cond, yes, no) => {
+                let cond = match cond.eval(sp)? {
+                    Expression::Num(n) => n != 0,
+                    Expression::Text(s) => !s.is_empty(),
+                    Expression::Ver(_) => false,
+                };
+                eval_type_chk!(yes, no);
+                Ok(if cond { yes } else { no })
+            },
+        }
+    }
 }
