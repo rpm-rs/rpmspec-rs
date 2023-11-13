@@ -33,112 +33,112 @@ pub enum MacroType {
 }
 
 impl std::fmt::Debug for MacroType {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Self::Internal(_) => f.write_str("<builtin>")?,
-			Self::Runtime { offset, len, s, .. } => f.write_str(&s.read()[*offset..offset + len])?,
-		}
-		Ok(())
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+	match self {
+	    Self::Internal(_) => f.write_str("<builtin>")?,
+	    Self::Runtime { offset, len, s, .. } => f.write_str(&s.read()[*offset..offset + len])?,
 	}
+	Ok(())
+    }
 }
 
 impl From<&str> for MacroType {
     fn from(value: &str) -> Self {
-		Self::Runtime { file: Arc::from(Path::new("unknown")), offset: 0, s: Arc::new(RwLock::new(value.into())), param: false, len: value.len() }
+	Self::Runtime { file: Arc::from(Path::new("unknown")), offset: 0, s: Arc::new(RwLock::new(value.into())), param: false, len: value.len() }
     }
 }
 
 macro_rules! __internal_macros {
     ($(macro $m:ident($p:pat, $o:pat, $r:pat) $body:block )+) => {
         $(
-        	#[allow(non_snake_case, clippy::unnecessary_wraps)]
+            #[allow(non_snake_case, clippy::unnecessary_wraps)]
             fn $m($p: &mut SpecParser, $o: &mut String, $r: &mut Consumer<dyn Read + '_>) -> Result<(), PE> $body
         )+
         lazy_static::lazy_static! {
             /// A list of macros defined in rust internally
-			pub static ref INTERNAL_MACROS: HashMap<String, Vec<MacroType>> = {
-				let mut ret = HashMap::new();
-				$({
-					ret.insert(stringify!($m).into(), vec![MacroType::Internal($m)]);
-				})+
-				ret
-			};
-		}
-	};
+            pub static ref INTERNAL_MACROS: HashMap<String, Vec<MacroType>> = {
+                let mut ret = HashMap::new();
+	        $({
+                    ret.insert(stringify!($m).into(), vec![MacroType::Internal($m)]);
+	        })+
+	        ret
+	    };
+        }
+    };
 }
 
 // you will see some `#[rustfmt::skip]`, this is related to
 // https://github.com/rust-lang/rustfmt/issues/5866
 __internal_macros!(
-	macro define(p, _, r) {
-		while let Some(ch) = r.next() {
-			if !ch.is_whitespace() {
-				r.back();
-				break;
-			}
-		}
-		let pos = r.pos;
-		let def = r.read_til_eol().ok_or_else(|| eyre!("%define: read_til_eol() failed"))?;
-		let def = def.trim_start();
-		#[rustfmt::skip]
-		let Some((name, def)) = def.split_once(' ') else {
-			return Err(eyre!("%define: Expected 2 arguments").into());
-		};
-		let def = def.trim();
-		let (name, param): (String, bool) = name.strip_suffix("()").map_or_else(|| (name.into(), false), |x| (x.into(), true));
-		let csm = r.range(pos + 1 + name.len()..r.pos).ok_or_else(|| eyre!("%define: cannot unwind Consumer"))?;
-		p.define_macro(name, &csm, param, def.len());
-		Ok(())
-	}
-	macro global(p, o, r) {
-		define(p, o, r)
-	}
-	macro undefine(p, _, r) {
-		p.macros.remove(&r.read_til_eol().unwrap());
-		Ok(())
-	}
-	macro load(p, _, r) {
-		let f: String = r.collect();
-		p.load_macro_from_file(std::path::Path::new(&*f))?;
-		Ok(())
-	}
-	macro expand(p, o, r) {
-		// * Why downcasting `r` yet again?
-		// Apparently `r` is `dyn` but we need to convert it to `impl` to use `p.parse_macro()`.
-		// See `p._rp_macro()` for more info.
-		// * Wait wait, won't `parse_macro()` call `_rp_macro()`?
-		// Yeah... internal macros should not call `_rp_macro()` but we have no choice...
-		// It will skip `Arc::try_unwrap()` inside `_rp_macro()` anyway since `new_reader.r` is
-		// `None`. This should be safe.
+    macro define(p, _, r) {
+        while let Some(ch) = r.next() {
+            if !ch.is_whitespace() {
+                r.back();
+                break;
+            }
+        }
+        let pos = r.pos;
+        let def = r.read_til_eol().ok_or_else(|| eyre!("%define: read_til_eol() failed"))?;
+        let def = def.trim_start();
+        #[rustfmt::skip]
+        let Some((name, def)) = def.split_once(' ') else {
+            return Err(eyre!("%define: Expected 2 arguments").into());
+        };
+        let def = def.trim();
+        let (name, param): (String, bool) = name.strip_suffix("()").map_or_else(|| (name.into(), false), |x| (x.into(), true));
+        let csm = r.range(pos + 1 + name.len()..r.pos).ok_or_else(|| eyre!("%define: cannot unwind Consumer"))?;
+        p.define_macro(name, &csm, param, def.len());
+        Ok(())
+    }
+    macro global(p, o, r) {
+        define(p, o, r)
+    }
+    macro undefine(p, _, r) {
+        p.macros.remove(&r.read_til_eol().unwrap());
+        Ok(())
+    }
+    macro load(p, _, r) {
+        let f: String = r.collect();
+        p.load_macro_from_file(std::path::Path::new(&*f))?;
+        Ok(())
+    }
+    macro expand(p, o, r) {
+        // * Why downcasting `r` yet again?
+        // Apparently `r` is `dyn` but we need to convert it to `impl` to use `p.parse_macro()`.
+        // See `p._rp_macro()` for more info.
+        // * Wait wait, won't `parse_macro()` call `_rp_macro()`?
+        // Yeah... internal macros should not call `_rp_macro()` but we have no choice...
+        // It will skip `Arc::try_unwrap()` inside `_rp_macro()` anyway since `new_reader.r` is
+        // `None`. This should be safe.
 
-		let new_reader = r.range(r.pos..r.end).ok_or_else(|| eyre!("Cannot wind Consumer in %expand"))?;
+        let new_reader = r.range(r.pos..r.end).ok_or_else(|| eyre!("Cannot wind Consumer in %expand"))?;
 
-		// SAFETY:
-		// This is a valid downcast because `new_reader.r` is `None` given
-		// that it is created from `Consumer::range()`. Therefore, changing
-		// `<R>` to anything should not affect the actual reader.
-		let mut new_reader = *unsafe { Box::from_raw(Box::into_raw(Box::new(new_reader)).cast()) };
-		p.parse_macro::<std::fs::File>(o, &mut new_reader)?;
-		// r.pos = new_reader.pos;
-		Ok(())
-	}
-	macro expr(p, o, r) {
-		let mut rawexpression = String::new();
-		expand(p, &mut rawexpression, r)?;
-		// any type will do
-		let mut csm: Consumer<std::fs::File> = Consumer::new(Arc::new(RwLock::new(rawexpression)), None, Arc::from(Path::new("<expr>")));
-		p.parse_expr(o, &mut csm)?;
-		Ok(())
-	}
-	macro lua(p, o, r) {
-		let content: String = r.collect();
-		let parser = Arc::new(RwLock::new(std::mem::take(p)));
-		let out = crate::lua::run(&parser, &content)?;
-		std::mem::swap(p, &mut Arc::try_unwrap(parser).expect("Cannot unwrap Arc for print() output in lua").into_inner()); // break down Arc then break down RwLock
-		o.push_str(&out);
-		Ok(())
-	}
-	macro macrobody(p, o, r) {
+        // SAFETY:
+        // This is a valid downcast because `new_reader.r` is `None` given
+        // that it is created from `Consumer::range()`. Therefore, changing
+        // `<R>` to anything should not affect the actual reader.
+        let mut new_reader = *unsafe { Box::from_raw(Box::into_raw(Box::new(new_reader)).cast()) };
+        p.parse_macro::<std::fs::File>(o, &mut new_reader)?;
+        // r.pos = new_reader.pos;
+        Ok(())
+    }
+    macro expr(p, o, r) {
+        let mut rawexpression = String::new();
+        expand(p, &mut rawexpression, r)?;
+        // any type will do
+        let mut csm: Consumer<std::fs::File> = Consumer::new(Arc::new(RwLock::new(rawexpression)), None, Arc::from(Path::new("<expr>")));
+        p.parse_expr(o, &mut csm)?;
+        Ok(())
+    }
+    macro lua(p, o, r) {
+        let content: String = r.collect();
+        let parser = Arc::new(RwLock::new(std::mem::take(p)));
+        let out = crate::lua::run(&parser, &content)?;
+        std::mem::swap(p, &mut Arc::try_unwrap(parser).expect("Cannot unwrap Arc for print() output in lua").into_inner()); // break down Arc then break down RwLock
+        o.push_str(&out);
+        Ok(())
+    }
+    macro macrobody(p, o, r) {
 		let name = r.collect();
 		#[rustfmt::skip]
 		let Some(Some(m)) = p.macros.get(&name).map(|x| x.last()) else {
