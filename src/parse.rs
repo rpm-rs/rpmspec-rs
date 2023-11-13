@@ -21,12 +21,12 @@ use tracing::{debug, error, warn};
 
 const PKGNAMECHARSET: &str = "_-().";
 lazy_static::lazy_static! {
-	static ref RE_PQC:	Regex = Regex::new(r"(>=?|<=?|=)\s+(\d+:)?([\w\d.^]+)(-([\w\d.^]+))?(.*)").unwrap();
-	static ref RE_REQ:	Regex = Regex::new(r"(?m)^Requires(?:\(([\w,\s]+)\))?:\s*(.+)$").unwrap();
+    static ref RE_PQC:	Regex = Regex::new(r"(>=?|<=?|=)\s+(\d+:)?([\w\d.^]+)(-([\w\d.^]+))?(.*)").unwrap();
+    static ref RE_REQ:	Regex = Regex::new(r"(?m)^Requires(?:\(([\w,\s]+)\))?:\s*(.+)$").unwrap();
 	static ref RE_FILE:	Regex = Regex::new(r"(?m)^(%\w+(\(.+\))?\s+)?(.+)$").unwrap();
-	static ref RE_CLOG:	Regex = Regex::new(r"(?m)^\*[ \t]*((\w{3})[ \t]+(\w{3})[ \t]+(\d+)[ \t]+(\d+))[ \t]+(\S+)([ \t]+<([\w@.+]+)>)?([ \t]+-[ \t]+([\d.-^~_\w]+))?$((\n^[^*\n]*)+)").unwrap();
-	static ref RE_PMB:	Regex = Regex::new(r"(\w+):\s*(.+)").unwrap();
-	static ref RE_DNL:	Regex = Regex::new(r"%dnl\b").unwrap();
+    static ref RE_CLOG:	Regex = Regex::new(r"(?m)^\*[ \t]*((\w{3})[ \t]+(\w{3})[ \t]+(\d+)[ \t]+(\d+))[ \t]+(\S+)([ \t]+<([\w@.+]+)>)?([ \t]+-[ \t]+([\d.-^~_\w]+))?$((\n^[^*\n]*)+)").unwrap();
+    static ref RE_PMB:	Regex = Regex::new(r"(\w+):\s*(.+)").unwrap();
+    static ref RE_DNL:	Regex = Regex::new(r"%dnl\b").unwrap();
 }
 
 /// Conditional operators used in specifying dependencies.
