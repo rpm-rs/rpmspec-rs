@@ -15,37 +15,37 @@ type InternalMacroFn = fn(&mut SpecParser, &mut String, &mut Consumer<dyn Read +
 /// A macro used in a spec file
 #[derive(Clone)]
 pub enum MacroType {
-	/// Represents a macro written in rust and defined internally
-	Internal(InternalMacroFn),
-	/// Represents a macro defined during runtime
-	Runtime {
-		/// Path to file with the macro defined
-		file: Arc<Path>,
-		/// Number of chars before the macro definition
-		offset: usize,
-		/// Length of macro definition
-		len: usize,
-		/// The entire file pretty much
-		s: Arc<RwLock<String>>,
-		/// Is this a parameterized macro?
-		param: bool,
-	},
+    /// Represents a macro written in rust and defined internally
+    Internal(InternalMacroFn),
+    /// Represents a macro defined during runtime
+    Runtime {
+        /// Path to file with the macro defined
+        file: Arc<Path>,
+        /// Number of chars before the macro definition
+        offset: usize,
+        /// Length of macro definition
+        len: usize,
+        /// The entire file pretty much
+        s: Arc<RwLock<String>>,
+        /// Is this a parameterized macro?
+        param: bool,
+    },
 }
 
 impl std::fmt::Debug for MacroType {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Self::Internal(_) => f.write_str("<builtin>")?,
-			Self::Runtime { offset, len, s, .. } => f.write_str(&s.read()[*offset..offset + len])?,
-		}
-		Ok(())
-	}
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Internal(_) => f.write_str("<builtin>")?,
+            Self::Runtime { offset, len, s, .. } => f.write_str(&s.read()[*offset..offset + len])?,
+        }
+        Ok(())
+    }
 }
 
 impl From<&str> for MacroType {
-	fn from(value: &str) -> Self {
-		Self::Runtime { file: Arc::from(Path::new("unknown")), offset: 0, s: Arc::new(RwLock::new(value.into())), param: false, len: value.len() }
-	}
+    fn from(value: &str) -> Self {
+        Self::Runtime { file: Arc::from(Path::new("unknown")), offset: 0, s: Arc::new(RwLock::new(value.into())), param: false, len: value.len() }
+    }
 }
 
 macro_rules! __internal_macros {
