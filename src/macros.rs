@@ -37,9 +37,9 @@ impl std::fmt::Debug for MacroType {
 		match self {
 			Self::Internal(_) => f.write_str("<builtin>")?,
 			Self::Runtime { offset, len, s, .. } => f.write_str(&s.read()[*offset..offset + len])?,
-        }
+		}
 		Ok(())
-    }
+	}
 }
 
 impl From<&str> for MacroType {
