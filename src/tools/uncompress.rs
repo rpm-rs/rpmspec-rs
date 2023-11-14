@@ -46,23 +46,17 @@ impl TryFrom<&Path> for CmprxFmt {
         f.read_exact(&mut buf)?;
         magic!(BZIP2: 'B' 'Z' 'h');
         magic!(ZIP: 'P' 'K' 3 4);
-        magic!(ZIP: 'P' 'K' 0 0);
-        // pkzip
+        magic!(ZIP: 'P' 'K' 0 0); // pkzip
         magic!(XZ: 0xfd 0x37 0x7a 0x58 0x5a 0x00);
         // new style xz (lzma) with magic
         magic!(ZSTD: 0x28 0x85 0x2f);
         magic!(LZIP: 'L' 'Z' 'I' 'P');
         magic!(LRZIP: 'L' 'R' 'Z' 'I');
-        magic!(Other: 37 213);
-        // gzip
-        magic!(Other: 37 236);
-        // old gzip
-        magic!(Other: 37 36);
-        // pack
-        magic!(Other: 37 240);
-        // SCO lzh
-        magic!(Other: 37 235);
-        // compress
+        magic!(Other: 37 213); // gzip
+        magic!(Other: 37 236); // old gzip
+        magic!(Other: 37 36); // pack
+        magic!(Other: 37 240); // SCO lzh
+        magic!(Other: 37 235); // compress
         magic!(SEVENZIP: '7' 'z' 0xbc 0xaf 0x27 0x1c);
         if let Some(Some(ext)) = value.extension().map(std::ffi::OsStr::to_str) {
             if ext == "lzma" || ext == "LZMA" {
