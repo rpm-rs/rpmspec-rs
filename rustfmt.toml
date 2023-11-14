@@ -5,5 +5,4 @@ merge_derives = true
 match_block_trailing_comma = true
 use_field_init_shorthand = true
 use_try_shorthand = true
-hard_tabs = true
 fn_params_layout = "compressed"
