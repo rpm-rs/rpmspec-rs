@@ -10,8 +10,146 @@
 //! <https://rpm-software-management.github.io/rpm/manual/lua.html>
 use crate::parse::SpecParser;
 use parking_lot::RwLock;
-use rlua::{Lua, Result};
-use std::sync::Arc;
+use rlua::{ExternalResult, Lua, Result};
+use std::{
+    io::{Read, Seek, Write},
+    str::FromStr,
+    sync::Arc,
+};
+
+#[derive(Default)]
+enum RpmFileIOType {
+    Bzdio(bzip2::Decompress),
+    Fdio,
+    Gzdio(flate2::Decompress),
+    #[default]
+    Ufdio,
+    Xzdio,
+    Zstdio,
+}
+impl RpmFileIOType {
+    fn process(&mut self, bs: Vec<u8>) -> rlua::Result<Vec<u8>> {
+        match self {
+            RpmFileIOType::Bzdio(dc) => {
+                let mut buf = vec![];
+                while let bzip2::Status::MemNeeded = dc.decompress_vec(&bs, &mut buf).to_lua_err()? {
+                    buf.try_reserve(buf.capacity()).to_lua_err()?;
+                }
+                Ok(buf)
+            },
+            RpmFileIOType::Fdio => Ok(bs),
+            RpmFileIOType::Gzdio(dc) => {
+                let mut buf = vec![];
+                dc.decompress_vec(&bs, &mut buf, flate2::FlushDecompress::None).to_lua_err()?;
+                Ok(buf)
+            },
+            RpmFileIOType::Ufdio => Ok(bs),
+            RpmFileIOType::Xzdio => {
+                // let mut buf = vec![];
+                // dc.read_to_end(&mut buf);
+                // Ok(buf)
+                todo!()
+            },
+            RpmFileIOType::Zstdio => todo!(),
+        }
+    }
+}
+
+struct RpmFileMode {
+    append: bool,
+    write: bool,
+    read: bool,
+    fail_if_exist: bool,
+    thread: bool,
+    iodebug: bool,
+    iotype: RpmFileIOType,
+}
+
+impl std::str::FromStr for RpmFileMode {
+    type Err = rlua::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        let (iotype, left) = if let Some((left, right)) = s.split_once('.') {
+            let iotype = match right {
+                "bzdio" => RpmFileIOType::Bzdio(bzip2::Decompress::new(false)),
+                "fdio" => RpmFileIOType::Fdio,
+                "gzdio" => RpmFileIOType::Gzdio(flate2::Decompress::new(true)),
+                "ufdio" => RpmFileIOType::Ufdio,
+                "xzdio" => RpmFileIOType::Xzdio,
+                "zstdio" => RpmFileIOType::Zstdio,
+                _ => return Err("Invalid iotype for rpm:open()/reopen()").to_lua_err(),
+            };
+            (iotype, left)
+        } else {
+            (RpmFileIOType::default(), s)
+        };
+        let append = left.contains('a');
+        let write = left.contains('w') || left.contains('+');
+        let read = left.contains('r') || left.contains('+');
+        let fail_if_exist = left.contains('x');
+        let thread = left.contains('T');
+        let iodebug = left.contains('?');
+        Ok(RpmFileMode { append, write, read, fail_if_exist, thread, iodebug, iotype })
+    }
+}
+
+struct RpmFile {
+    path: String,
+    innerfile: std::fs::File,
+    modes: RpmFileMode,
+}
+
+impl RpmFile {
+    fn new(path: String, mode: &str) -> rlua::Result<Self> {
+        let modes = RpmFileMode::from_str(mode).to_lua_err()?;
+        let mut f = std::fs::File::options();
+        f.read(modes.read).write(modes.write);
+        if modes.fail_if_exist {
+            f.create_new(true);
+        } else {
+            f.create(true);
+        }
+        let mut innerfile = f.open(&path).to_lua_err()?;
+        if modes.append {
+            innerfile.seek(std::io::SeekFrom::End(0)).to_lua_err()?;
+        }
+        Ok(Self { path, innerfile, modes })
+    }
+}
+
+impl rlua::UserData for RpmFile {
+    fn add_methods<'lua, T: rlua::prelude::LuaUserDataMethods<'lua, Self>>(methods: &mut T) {
+        methods.add_method("close", |_, _, ()| Ok(())); // literally do nothing
+        methods.add_method_mut("flush", |_, this, ()| this.innerfile.flush().to_lua_err());
+        methods.add_method_mut("read", |_, this, len: Option<usize>| {
+            let Some(len) = len else {
+                let mut buf = vec![];
+                let size = this.innerfile.read_to_end(&mut buf).to_lua_err()?;
+                buf.truncate(size);
+                return Ok(this.modes.iotype.process(buf)?);
+            };
+            let mut buf = Vec::with_capacity(len);
+            this.innerfile.read_exact(&mut buf).to_lua_err()?;
+            Ok(this.modes.iotype.process(buf)?)
+        });
+        methods.add_method_mut("seek", |_, this, (mode, offset): (String, isize)| {
+            this.innerfile
+                .seek(match &*mode {
+                    "set" => std::io::SeekFrom::Start(offset.try_into().to_lua_err()?),
+                    "cur" => std::io::SeekFrom::Current(offset.try_into().to_lua_err()?),
+                    "end" => std::io::SeekFrom::End(offset.try_into().to_lua_err()?),
+                    _ => return Err(format!("Invalid mode for seek(): `{mode}`")).to_lua_err()?,
+                })
+                .to_lua_err()
+        });
+        methods.add_method_mut("write", |_, this, (buf, len): (String, usize)| this.innerfile.write(buf[..len].as_bytes()).to_lua_err());
+        methods.add_method_mut("reopen", |_, this, mode: String| {
+            let f = RpmFile::new(this.path.clone(), &mode).to_lua_err()?;
+            drop(std::mem::replace(this, f));
+            Ok(())
+        });
+    }
+}
 
 // https://github.com/amethyst/rlua/blob/master/examples/repl.rs
 fn repl() {
@@ -151,33 +289,9 @@ __lua!(
         fn load(p, _, arg) {
             p.write().load_macro_from_file(&std::path::PathBuf::from(arg)).map_err(rlua::ExternalError::to_lua_err)
         }
-        // todo rpm.fd
-        // * BEGIN: File operations
-        fn open(_, _, _=>(String, String)) {
-            todo!()
-        }
-        fn close(_, _, _=>()) {
-            todo!()
-        }
-        fn flush(_, _, _=>()) {
-            todo!()
-        }
-        fn read(_, _, _=>Option<usize>) {
-            todo!()
-        }
-        fn seek(_, _, _=>(String, usize)) {
-            todo!()
-        }
-        fn write(_, _, _=>(String, Option<usize>)) {
-            todo!()
-        }
-        fn reopen(_, _, _) {
-            todo!()
-        }
-        // ... END: File operations
-
-        fn redirect2null(_, _, _) {
-            todo!()
+        fn open(_, _, args=>(String, Option<String>)): super::RpmFile {
+            let (path, mode) = args;
+            super::RpmFile::new(path, mode.as_ref().map_or("+", |s| s))
         }
         fn undefine(p, _, name) {
             p.write().macros.remove(&*name).ok_or_else(|| "error undefining macro".to_lua_err())?;
