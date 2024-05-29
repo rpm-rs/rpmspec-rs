@@ -42,8 +42,8 @@ impl From<color_eyre::Report> for ParseErr {
     }
 }
 
-impl From<rlua::Error> for ParseErr {
-    fn from(value: rlua::Error) -> Self {
+impl From<mlua::Error> for ParseErr {
+    fn from(value: mlua::Error) -> Self {
         Self::Others(color_eyre::eyre::eyre!(value))
     }
 }

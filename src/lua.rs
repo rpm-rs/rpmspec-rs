@@ -1,16 +1,16 @@
 //! Handlers for Lua \
 //! FYI RPM spec has tight integration with Lua \
 //!
-//! BTW everything here is heavily rewritten to use `rlua`
+//! BTW everything here is heavily rewritten to use `mlua`
 //!
 //! original C code creates a lib which is not really supported
-//! in rlua so we kinda have to register a custom type instead
-//! aka. `rlua::UserData` \
+//! in mlua so we kinda have to register a custom type instead
+//! aka. `mlua::UserData` \
 //! there are two things: `rpm` and `posix`. See more information:
 //! <https://rpm-software-management.github.io/rpm/manual/lua.html>
 use crate::parse::SpecParser;
+use mlua::{ExternalResult, Lua, Result};
 use parking_lot::RwLock;
-use rlua::{ExternalResult, Lua, Result};
 use std::{
     io::{Read, Seek, Write},
     str::FromStr,
@@ -28,19 +28,19 @@ enum RpmFileIOType {
     Zstdio,
 }
 impl RpmFileIOType {
-    fn process(&mut self, bs: Vec<u8>) -> rlua::Result<Vec<u8>> {
+    fn process(&mut self, bs: Vec<u8>) -> mlua::Result<Vec<u8>> {
         match self {
             RpmFileIOType::Bzdio(dc) => {
                 let mut buf = vec![];
-                while let bzip2::Status::MemNeeded = dc.decompress_vec(&bs, &mut buf).to_lua_err()? {
-                    buf.try_reserve(buf.capacity()).to_lua_err()?;
+                while let bzip2::Status::MemNeeded = dc.decompress_vec(&bs, &mut buf).into_lua_err()? {
+                    buf.try_reserve(buf.capacity()).into_lua_err()?;
                 }
                 Ok(buf)
             },
             RpmFileIOType::Fdio => Ok(bs),
             RpmFileIOType::Gzdio(dc) => {
                 let mut buf = vec![];
-                dc.decompress_vec(&bs, &mut buf, flate2::FlushDecompress::None).to_lua_err()?;
+                dc.decompress_vec(&bs, &mut buf, flate2::FlushDecompress::None).into_lua_err()?;
                 Ok(buf)
             },
             RpmFileIOType::Ufdio => Ok(bs),
@@ -66,7 +66,7 @@ struct RpmFileMode {
 }
 
 impl std::str::FromStr for RpmFileMode {
-    type Err = rlua::Error;
+    type Err = mlua::Error;
 
     fn from_str(s: &str) -> Result<Self> {
         let (iotype, left) = if let Some((left, right)) = s.split_once('.') {
@@ -77,7 +77,7 @@ impl std::str::FromStr for RpmFileMode {
                 "ufdio" => RpmFileIOType::Ufdio,
                 "xzdio" => RpmFileIOType::Xzdio,
                 "zstdio" => RpmFileIOType::Zstdio,
-                _ => return Err("Invalid iotype for rpm:open()/reopen()").to_lua_err(),
+                _ => return Err("Invalid iotype for rpm:open()/reopen()").into_lua_err(),
             };
             (iotype, left)
         } else {
@@ -100,8 +100,8 @@ struct RpmFile {
 }
 
 impl RpmFile {
-    fn new(path: String, mode: &str) -> rlua::Result<Self> {
-        let modes = RpmFileMode::from_str(mode).to_lua_err()?;
+    fn new(path: String, mode: &str) -> mlua::Result<Self> {
+        let modes = RpmFileMode::from_str(mode).into_lua_err()?;
         let mut f = std::fs::File::options();
         f.read(modes.read).write(modes.write);
         if modes.fail_if_exist {
@@ -109,82 +109,81 @@ impl RpmFile {
         } else {
             f.create(true);
         }
-        let mut innerfile = f.open(&path).to_lua_err()?;
+        let mut innerfile = f.open(&path).into_lua_err()?;
         if modes.append {
-            innerfile.seek(std::io::SeekFrom::End(0)).to_lua_err()?;
+            innerfile.seek(std::io::SeekFrom::End(0)).into_lua_err()?;
         }
         Ok(Self { path, innerfile, modes })
     }
 }
 
-impl rlua::UserData for RpmFile {
-    fn add_methods<'lua, T: rlua::prelude::LuaUserDataMethods<'lua, Self>>(methods: &mut T) {
+impl mlua::UserData for RpmFile {
+    fn add_methods<'lua, T: mlua::prelude::LuaUserDataMethods<'lua, Self>>(methods: &mut T) {
         methods.add_method("close", |_, _, ()| Ok(())); // literally do nothing
-        methods.add_method_mut("flush", |_, this, ()| this.innerfile.flush().to_lua_err());
+        methods.add_method_mut("flush", |_, this, ()| this.innerfile.flush().into_lua_err());
         methods.add_method_mut("read", |_, this, len: Option<usize>| {
             let Some(len) = len else {
                 let mut buf = vec![];
-                let size = this.innerfile.read_to_end(&mut buf).to_lua_err()?;
+                let size = this.innerfile.read_to_end(&mut buf).into_lua_err()?;
                 buf.truncate(size);
                 return Ok(this.modes.iotype.process(buf)?);
             };
             let mut buf = Vec::with_capacity(len);
-            this.innerfile.read_exact(&mut buf).to_lua_err()?;
+            this.innerfile.read_exact(&mut buf).into_lua_err()?;
             Ok(this.modes.iotype.process(buf)?)
         });
         methods.add_method_mut("seek", |_, this, (mode, offset): (String, isize)| {
             this.innerfile
                 .seek(match &*mode {
-                    "set" => std::io::SeekFrom::Start(offset.try_into().to_lua_err()?),
-                    "cur" => std::io::SeekFrom::Current(offset.try_into().to_lua_err()?),
-                    "end" => std::io::SeekFrom::End(offset.try_into().to_lua_err()?),
-                    _ => return Err(format!("Invalid mode for seek(): `{mode}`")).to_lua_err()?,
+                    "set" => std::io::SeekFrom::Start(offset.try_into().into_lua_err()?),
+                    "cur" => std::io::SeekFrom::Current(offset.try_into().into_lua_err()?),
+                    "end" => std::io::SeekFrom::End(offset.try_into().into_lua_err()?),
+                    _ => return Err(format!("Invalid mode for seek(): `{mode}`")).into_lua_err()?,
                 })
-                .to_lua_err()
+                .into_lua_err()
         });
-        methods.add_method_mut("write", |_, this, (buf, len): (String, usize)| this.innerfile.write(buf[..len].as_bytes()).to_lua_err());
+        methods.add_method_mut("write", |_, this, (buf, len): (String, usize)| this.innerfile.write(buf[..len].as_bytes()).into_lua_err());
         methods.add_method_mut("reopen", |_, this, mode: String| {
-            let f = RpmFile::new(this.path.clone(), &mode).to_lua_err()?;
+            let f = RpmFile::new(this.path.clone(), &mode).into_lua_err()?;
             drop(std::mem::replace(this, f));
             Ok(())
         });
     }
 }
 
-// https://github.com/amethyst/rlua/blob/master/examples/repl.rs
+// https://github.com/amethyst/mlua/blob/master/examples/repl.rs
 fn repl() {
-    Lua::new().context(|lua| {
-        let mut editor = rustyline::DefaultEditor::new().expect("Can't make new rustyline::DefaultEditor");
+    let lua = Lua::new();
+    let mut editor = rustyline::DefaultEditor::new().expect("Failed to create editor");
+
+    loop {
+        let mut prompt = "> ";
+        let mut line = String::new();
 
         loop {
-            let mut prompt = "> ";
-            let mut line = String::new();
+            match editor.readline(prompt) {
+                Ok(input) => line.push_str(&input),
+                Err(_) => return,
+            }
 
-            loop {
-                match editor.readline(prompt) {
-                    Ok(input) => line.push_str(&input),
-                    Err(_) => return,
-                }
-
-                match lua.load(&line).eval::<rlua::MultiValue>() {
-                    Ok(values) => {
-                        // editor.add_history_entry(line);
-                        println!("{}", values.iter().map(|value| format!("{value:?}")).collect::<Vec<_>>().join("\t"));
-                        break;
-                    },
-                    Err(rlua::Error::SyntaxError { incomplete_input: true, .. }) => {
-                        // continue reading input and append it to `line`
-                        line.push('\n'); // separate input lines
-                        prompt = ">> ";
-                    },
-                    Err(e) => {
-                        eprintln!("error: {e}");
-                        break;
-                    },
-                }
+            match lua.load(&line).eval::<mlua::MultiValue>() {
+                Ok(values) => {
+                    editor.add_history_entry(line).unwrap();
+                    println!("{}", values.iter().map(|value| format!("{:#?}", value)).collect::<Vec<_>>().join("\t"));
+                    break;
+                },
+                Err(mlua::Error::SyntaxError { incomplete_input: true, .. }) => {
+                    // continue reading input and append it to `line`
+                    line.push_str("\n"); // separate input lines
+                    prompt = ">> ";
+                },
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    break;
+                },
             }
         }
-    });
+    }
 }
 
 macro_rules! __lua {
@@ -198,14 +197,14 @@ macro_rules! __lua {
                 #[allow(unused_imports)]
                 use base64::{engine::general_purpose::STANDARD, Engine};
                 #[allow(unused_imports)]
-                use rlua::{Context, ExternalError, Result};
+                use mlua::{ExternalError, Result};
                 use parking_lot::RwLock;
                 use std::sync::Arc;
                 $(
                     #[allow(clippy::unnecessary_wraps)]
                     pub fn $name(
                         $p: &Arc<RwLock<SpecParser>>,
-                        $ctx: Context,
+                        $ctx: &mlua::Lua,
                         $arg: __lua!(@type $($at)? | String)
                     ) -> Result<__lua!(@type $($res)? | ())> $body
                 )+
@@ -214,27 +213,26 @@ macro_rules! __lua {
         pub(crate) fn run(rpmparser: &Arc<RwLock<SpecParser>>, script: &str) -> Result<String> {
             let lua = Lua::new();
             let printout = Arc::new(RwLock::new(String::new()));
-            lua.context(|ctx| -> rlua::Result<()> {
-                let globals = ctx.globals();
+            {
+                let globals = lua.globals();
                 $(
-                    let $ext = ctx.create_table()?;
+                    let $ext = lua.create_table()?;
                     $({
                         let p = Arc::clone(rpmparser);
-                        $ext.set(stringify!($name), ctx.create_function(move |ctx, arg| $ext::$name(&p, ctx, arg))?)?;
+                        $ext.set(stringify!($name), lua.create_function(move |lua, arg| $ext::$name(&p, lua, arg))?)?;
                     })+
                     globals.set(stringify!($ext), $ext)?;
                 )+
                 let printout = Arc::clone(&printout);
                 globals.set(
                     "print",
-                    ctx.create_function(move |_, s: String| {
+                    lua.create_function(move |_, s: String| {
                         printout.write().push_str(&s);
                         Ok(())
                     })?,
                 )?;
-                ctx.load(script).exec()?;
-                Ok(())
-            })?;
+                lua.load(script).exec()?;
+            }
             Ok(Arc::try_unwrap(printout).expect("Cannot unwrap Arc for print() output in lua").into_inner())
         }
     };
@@ -243,7 +241,7 @@ macro_rules! __lua {
 __lua!(
     mod rpm {
         fn b64decode(_, _, arg): String {
-            String::from_utf8(STANDARD.decode(arg).map_err(ExternalError::to_lua_err)?).map_err(ExternalError::to_lua_err)
+            String::from_utf8(STANDARD.decode(arg).map_err(ExternalError::into_lua_err)?).map_err(ExternalError::into_lua_err)
         }
         fn b64encode(_, _, arg): String {
             Ok(STANDARD.encode(arg))
@@ -261,15 +259,15 @@ __lua!(
                 p.write().macros.insert(name.into(), vec![(*def).into()]);
                 Ok(())
             } else {
-                Err("Invalid syntax: `%define {def}`".to_lua_err())
+                Err("Invalid syntax: `%define {def}`".into_lua_err())
             }
         }
         fn execute(_, _, args=>Vec<String>): i32 {
-            Ok(std::process::Command::new(&args[0]).args(&args[1..]).status().map_err(rlua::ExternalError::to_lua_err)?.code().unwrap_or(-1))
+            Ok(std::process::Command::new(&args[0]).args(&args[1..]).status().map_err(mlua::ExternalError::into_lua_err)?.code().unwrap_or(-1))
         }
         fn expand(p, _, arg): String {
             let mut out = smartstring::SmartString::new();
-            p.write().parse_macro::<std::fs::File>(&mut out, &mut (&*arg).into()).map_err(rlua::ExternalError::to_lua_err)?;
+            p.write().parse_macro::<std::fs::File>(&mut out, &mut (&*arg).into()).map_err(mlua::ExternalError::into_lua_err)?;
             Ok(out.to_string())
         }
         // glob(_, _, arg=>(String, Option<String>))
@@ -287,21 +285,21 @@ __lua!(
             Ok((false, false))
         }
         fn load(p, _, arg) {
-            p.write().load_macro_from_file(&std::path::PathBuf::from(arg)).map_err(rlua::ExternalError::to_lua_err)
+            p.write().load_macro_from_file(&std::path::PathBuf::from(arg)).map_err(mlua::ExternalError::into_lua_err)
         }
         fn open(_, _, args=>(String, Option<String>)): super::RpmFile {
             let (path, mode) = args;
             super::RpmFile::new(path, mode.as_ref().map_or("+", |s| s))
         }
         fn undefine(p, _, name) {
-            p.write().macros.remove(&*name).ok_or_else(|| "error undefining macro".to_lua_err())?;
+            p.write().macros.remove(&*name).ok_or_else(|| "error undefining macro".into_lua_err())?;
             Ok(())
         }
         fn vercmp(_, _, vers=>(String, String)): i8 {
             use rpmspec_common::expr::Version;
             use std::str::FromStr;
             let (v1, v2) = vers;
-            let (v1, v2) = (Version::from_str(&v1).map_err(ExternalError::to_lua_err)?, Version::from_str(&v2).map_err(ExternalError::to_lua_err)?);
+            let (v1, v2) = (Version::from_str(&v1).map_err(ExternalError::into_lua_err)?, Version::from_str(&v2).map_err(ExternalError::into_lua_err)?);
             Ok(v1.cmp(&v2) as i8)
         }
     }
@@ -314,7 +312,7 @@ __lua!(
                 return Ok(false);
             }
             use std::os::unix::fs::PermissionsExt;
-            let perms = p.metadata().map_err(ExternalError::to_lua_err)?.permissions().mode();
+            let perms = p.metadata().map_err(ExternalError::into_lua_err)?.permissions().mode();
             let x = perms & 0o7;
             let w = (perms >> 3) & 0o7;
             let r = (perms >> 6) & 0o7;
@@ -324,15 +322,15 @@ __lua!(
             Ok(true)
         }
         fn chdir(_, _, dir) {
-            std::env::set_current_dir(dir).map_err(ExternalError::to_lua_err)
+            std::env::set_current_dir(dir).map_err(ExternalError::into_lua_err)
         }
         fn chmod(_, _, args=>(String, String)) {
-            std::process::Command::new("chmod").arg(args.1).arg(args.0).status().map_err(ExternalError::to_lua_err)?;
+            std::process::Command::new("chmod").arg(args.1).arg(args.0).status().map_err(ExternalError::into_lua_err)?;
             Ok(())
         }
         fn chown(_, _, args=>(String, String, String)) {
             let (path, user, group) = args;
-            std::process::Command::new("chown").arg(format!("{user}:{group}")).arg(path).status().map_err(ExternalError::to_lua_err)?;
+            std::process::Command::new("chown").arg(format!("{user}:{group}")).arg(path).status().map_err(ExternalError::into_lua_err)?;
             Ok(())
         }
         fn ctermid(_, _, _=>()): String {
@@ -343,17 +341,17 @@ __lua!(
                 let out = libc::ctermid(std::ptr::null_mut());
                 core::ffi::CStr::from_ptr(out)
             };
-            cstr.to_str().map_err(ExternalError::to_lua_err).map(ToOwned::to_owned)
+            cstr.to_str().map_err(ExternalError::into_lua_err).map(ToOwned::to_owned)
         }
         fn dir(_, _, dir=>Option<String>): Vec<String> {
             let dir = match dir {
                 Some(dir) => std::path::PathBuf::from(dir),
-                None => std::env::current_dir().map_err(ExternalError::to_lua_err)?,
+                None => std::env::current_dir().map_err(ExternalError::into_lua_err)?,
             };
-            let rd = std::fs::read_dir(dir).map_err(ExternalError::to_lua_err)?;
+            let rd = std::fs::read_dir(dir).map_err(ExternalError::into_lua_err)?;
             let mut res = vec![];
             for f in rd {
-                let f = f.map_err(ExternalError::to_lua_err)?;
+                let f = f.map_err(ExternalError::into_lua_err)?;
                 res.push(f.path().to_string_lossy().to_string());
             }
             Ok(res)
@@ -371,10 +369,10 @@ __lua!(
             todo!()
         }
         fn getcwd(_, _, _=>()): String {
-            std::env::current_dir().map_err(ExternalError::to_lua_err).map(|p| p.to_string_lossy().to_string())
+            std::env::current_dir().map_err(ExternalError::into_lua_err).map(|p| p.to_string_lossy().to_string())
         }
         fn getenv(_, _, name=>String): String {
-            std::env::var(name).map_err(ExternalError::to_lua_err)
+            std::env::var(name).map_err(ExternalError::into_lua_err)
         }
         // getgroup() return type???
         fn getlogin(_, _, _=>()): String {
@@ -393,14 +391,14 @@ __lua!(
             todo!()
         }
         fn mkdir(_, _, path) {
-            std::fs::create_dir(path).map_err(ExternalError::to_lua_err)
+            std::fs::create_dir(path).map_err(ExternalError::into_lua_err)
         }
         fn mkfifo(_, _, _) {
             todo!()
         }
         // pathconf() return type???
         fn putenv(_, _, kv) {
-            let (key, value) = kv.split_once('=').ok_or_else(|| "putenv(): Cannot find `=` in provided argument".to_lua_err())?;
+            let (key, value) = kv.split_once('=').ok_or_else(|| "putenv(): Cannot find `=` in provided argument".into_lua_err())?;
             std::env::set_var(key, value);
             Ok(())
         }
@@ -408,7 +406,7 @@ __lua!(
             todo!()
         }
         fn rmdir(_, _, path) {
-            std::fs::remove_dir(path).map_err(ExternalError::to_lua_err)
+            std::fs::remove_dir(path).map_err(ExternalError::into_lua_err)
         }
         fn setgid(_, _, _) {
             todo!()
@@ -423,10 +421,10 @@ __lua!(
         // stat() return type???
         fn symlink(_, _, paths=>(String, String)) {
             let (path1, path2) = paths;
-            let path1 = std::ffi::CString::new(path1).map_err(ExternalError::to_lua_err)?;
-            let path2 = std::ffi::CString::new(path2).map_err(ExternalError::to_lua_err)?;
+            let path1 = std::ffi::CString::new(path1).map_err(ExternalError::into_lua_err)?;
+            let path2 = std::ffi::CString::new(path2).map_err(ExternalError::into_lua_err)?;
             if unsafe { libc::symlink(path1.as_ptr(), path2.as_ptr()) } != 0 {
-                return Err("libc::symlink() returned -1".to_lua_err())
+                return Err("libc::symlink() returned -1".into_lua_err())
             }
             Ok(())
         }
