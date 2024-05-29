@@ -48,9 +48,12 @@ impl RpmFileIOType {
                 // let mut buf = vec![];
                 // dc.read_to_end(&mut buf);
                 // Ok(buf)
-                todo!()
+
+                // TODO: support for xzdio
+                Err("rpmspec-rs does not yet support xzdio").into_lua_err()
             },
-            Self::Zstdio => todo!(),
+            // TODO: support for zsstdio
+            Self::Zstdio => Err("rpmspec-rs does not yet support zstdio").into_lua_err(),
         }
     }
 }
@@ -189,7 +192,7 @@ fn repl() {
 macro_rules! __lua {
     (@type $t:ty | $default:ty) => { $t };
     (@type | $default:ty) => { $default };
-    ($(mod $ext:ident{$(fn $name:ident($p:pat, $ctx:pat, $arg:pat$(=>$at:ty)?)$(: $res:ty)? $body:block)+})+) => {
+    ($(mod $ext:ident{$(fn $name:ident$(<$lua:lifetime>)?($p:pat, $ctx:pat, $arg:pat$(=>$at:ty)?)$(: $res:ty)? $body:block)+})+) => {
         $(
             mod $ext {
                 #[allow(unused_imports)]
@@ -197,14 +200,14 @@ macro_rules! __lua {
                 #[allow(unused_imports)]
                 use base64::{engine::general_purpose::STANDARD, Engine};
                 #[allow(unused_imports)]
-                use mlua::{ExternalError, Result};
+                use mlua::{ExternalError, Result, ExternalResult};
                 use parking_lot::RwLock;
                 use std::sync::Arc;
                 $(
                     #[allow(clippy::unnecessary_wraps)]
-                    pub fn $name(
+                    pub fn $name$(<$lua>)?(
                         $p: &Arc<RwLock<SpecParser>>,
-                        $ctx: &mlua::Lua,
+                        $ctx: &$($lua)?mlua::Lua,
                         $arg: __lua!(@type $($at)? | String)
                     ) -> Result<__lua!(@type $($res)? | ())> $body
                 )+
@@ -357,16 +360,19 @@ __lua!(
             Ok(res)
         }
         fn errno(_, _, _=>()): (String, isize) {
-            todo!()
+            // FIXME: no idea how to get errno… defaulting to 0
+            unsafe {
+                core::ffi::CStr::from_ptr(libc::strerror(0))
+            }.to_str().into_lua_err().map(ToOwned::to_owned).map(|s| (s, 0))
         }
         fn exec(_, _, _=>Vec<String>) {
-            todo!()
+            Err("This deprecated function will be removed in rpm 6.0, please use rpm.execute() instead.").into_lua_err()
         }
         fn files(p, ctx, f=>Option<String>): Vec<String> {
             dir(p, ctx, f)
         }
         fn fork(_, _, _=>()): isize {
-            todo!()
+            Err("This deprecated function will be removed in rpm 6.0, please use rpm.execute() instead.").into_lua_err()
         }
         fn getcwd(_, _, _=>()): String {
             std::env::current_dir().map_err(ExternalError::into_lua_err).map(|p| p.to_string_lossy().to_string())
@@ -374,27 +380,79 @@ __lua!(
         fn getenv(_, _, name=>String): String {
             std::env::var(name).map_err(ExternalError::into_lua_err)
         }
-        // getgroup() return type???
+        fn getgroup<'lua>(_, lua, group=>mlua::Value): mlua::Table<'lua> {
+            let g = match group {
+                mlua::Value::Number(n) => unsafe {
+                    libc::getgrgid(n.round() as u32)
+                },
+                mlua::Value::String(s) => unsafe {
+                    libc::getgrnam(std::ffi::CString::new(s.to_str()?).into_lua_err()?.as_ptr())
+                },
+                _ => return Err(mlua::Error::BadArgument {
+                    to: Some("getgroup".into()),
+                    pos: 1,
+                    name: Some("group".into()),
+                    cause: "Only accepts Number/String".into_lua_err().into()
+                }),
+            };
+            if g.is_null() {
+                lua.create_table()
+            } else {
+                let table = lua.create_table()?;
+                unsafe {
+                    table.set("name", core::ffi::CStr::from_ptr((*g).gr_name).to_str().into_lua_err()?)?;
+                    table.set("gid", (*g).gr_gid)?;
+                }
+                Ok(table)
+            }
+        }
         fn getlogin(_, _, _=>()): String {
-            todo!()
+            unsafe { core::ffi::CStr::from_ptr(libc::getlogin()).to_str().into_lua_err().map(ToOwned::to_owned) }
         }
         fn getpasswd(_, _, _=>Vec<String>): String {
             todo!()
         }
-        fn getprocessid(_, _, _): usize {
-            todo!()
+        fn getprocessid<'lua>(_, lua, arg=>Option<String>): mlua::Value<'lua> {
+            let Some(arg) = arg else {
+                let t = lua.create_table()?;
+                unsafe {
+                    t.set("egid", libc::getegid())?;
+                    t.set("euid", libc::geteuid())?;
+                    t.set("gid", libc::getgid())?;
+                    t.set("uid", libc::getuid())?;
+                    t.set("pgrp", libc::getpgrp())?;
+                    t.set("pid", libc::getpid())?;
+                    t.set("ppid", libc::getppid())?;
+                }
+                return Ok(mlua::Value::Table(t));
+            };
+            Ok(mlua::Value::Number(unsafe {
+                match &*arg {
+                    "egid" => libc::getegid() as f64,
+                    "euid" => libc::geteuid() as f64,
+                    "gid" => libc::getgid() as f64,
+                    "uid" => libc::getuid() as f64,
+                    "pgrp" => libc::getpgrp() as f64,
+                    "pid" => libc::getpid() as f64,
+                    "ppid" => libc::getppid() as f64,
+                    _ => return Err("Invalid argument to getprocessid()").into_lua_err(),
+                }
+            }))
         }
-        fn kill(_, _, _=>(usize, Option<usize>)) {
-            todo!()
+        fn kill(_, _, (pid, signal)=>(i32, Option<i32>)): i32 {
+            let signal = signal.unwrap_or(15); // SIGTERM
+            Ok(unsafe { libc::kill(pid, signal) })
         }
-        fn link(_, _, _=>(String, String)) {
-            todo!()
+        fn link(_, _, (old, new)=>(String, String)): i32 {
+            let old = std::ffi::CString::new(old).into_lua_err()?.as_ptr();
+            let new = std::ffi::CString::new(new).into_lua_err()?.as_ptr();
+            Ok(unsafe { libc::link(old, new)})
         }
         fn mkdir(_, _, path) {
             std::fs::create_dir(path).map_err(ExternalError::into_lua_err)
         }
-        fn mkfifo(_, _, _) {
-            todo!()
+        fn mkfifo(_, _, path): i32 {
+            Ok(unsafe { libc::mkfifo(std::ffi::CString::new(path).into_lua_err()?.as_ptr(), 0o777) })
         }
         // pathconf() return type???
         fn putenv(_, _, kv) {
@@ -402,8 +460,12 @@ __lua!(
             std::env::set_var(key, value);
             Ok(())
         }
-        fn readlink(_, _, _): String {
-            todo!()
+        fn readlink(_, _, path=>String): String {
+            let mut cbuf = Vec::with_capacity(512);
+            unsafe {
+                libc::readlink(std::ffi::CString::new(path).into_lua_err()?.as_ptr(), cbuf.as_mut_ptr(), 512);
+            }
+            unsafe { std::ffi::CStr::from_ptr(cbuf.as_ptr().cast()) }.to_str().map(ToOwned::to_owned).into_lua_err()
         }
         fn rmdir(_, _, path) {
             std::fs::remove_dir(path).map_err(ExternalError::into_lua_err)
@@ -439,11 +501,18 @@ __lua!(
         fn uname(_, _, _): String {
             todo!()
         }
-        fn utime(_, _, _=>(String, Option<usize>, Option<usize>)) {
-            todo!()
+        fn utime(_, _, (path, mtime, ctime)=>(String, Option<i64>, Option<i64>)): i32 {
+            let currtime = unsafe { libc::time(std::ptr::null_mut()) };
+            let modtime = mtime.unwrap_or(currtime);
+            let actime = ctime.unwrap_or(currtime);
+            let times = libc::utimbuf { modtime, actime };
+            Ok(unsafe { libc::utime(
+                std::ffi::CString::new(path).into_lua_err()?.as_ptr(),
+                std::ptr::from_ref(&times)
+            )})
         }
         fn wait(_, _, _=>usize) {
-            todo!()
+            Err("This deprecated function will be removed in rpm 6.0, please use rpm.execute() instead.").into_lua_err()
         }
         fn setenv(_, _, args=>(String, String, Option<bool>)) {
             let (name, value, should_override) = args;
