@@ -294,7 +294,9 @@ impl Expr {
                     give!(Num(r) = b);
                     return Ok(Expression::Num(l + r));
                 }
-                let Expression::Text(l) = a else { return Err(Err::NoAdd(Box::new(a))) };
+                let Expression::Text(l) = a else {
+                    return Err(Err::NoAdd(Box::new(a)));
+                };
                 give!(Text(r) = b);
                 Ok(Expression::Text(format!("{l}{r}").into()))
             },

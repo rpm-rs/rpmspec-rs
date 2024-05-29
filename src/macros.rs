@@ -81,8 +81,8 @@ __internal_macros!(
         let def = r.read_til_eol().ok_or_else(|| eyre!("%define: read_til_eol() failed"))?;
         let def = def.trim_start();
         #[rustfmt::skip]
-        let Some((name, def)) = def.split_once(' ') else {
-            return Err(eyre!("%define: Expected 2 arguments").into());
+                let Some((name, def)) = def.split_once(' ') else {
+                    return Err(eyre!("%define: Expected 2 arguments").into());
         };
         let def = def.trim();
         let (name, param): (String, bool) = name.strip_suffix("()").map_or_else(|| (name.into(), false), |x| (x.into(), true));

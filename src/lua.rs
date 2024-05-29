@@ -30,27 +30,27 @@ enum RpmFileIOType {
 impl RpmFileIOType {
     fn process(&mut self, bs: Vec<u8>) -> mlua::Result<Vec<u8>> {
         match self {
-            RpmFileIOType::Bzdio(dc) => {
+            Self::Bzdio(dc) => {
                 let mut buf = vec![];
-                while let bzip2::Status::MemNeeded = dc.decompress_vec(&bs, &mut buf).into_lua_err()? {
+                while dc.decompress_vec(&bs, &mut buf).into_lua_err()? == bzip2::Status::MemNeeded {
                     buf.try_reserve(buf.capacity()).into_lua_err()?;
                 }
                 Ok(buf)
             },
-            RpmFileIOType::Fdio => Ok(bs),
-            RpmFileIOType::Gzdio(dc) => {
+            Self::Fdio => Ok(bs),
+            Self::Gzdio(dc) => {
                 let mut buf = vec![];
                 dc.decompress_vec(&bs, &mut buf, flate2::FlushDecompress::None).into_lua_err()?;
                 Ok(buf)
             },
-            RpmFileIOType::Ufdio => Ok(bs),
-            RpmFileIOType::Xzdio => {
+            Self::Ufdio => Ok(bs),
+            Self::Xzdio => {
                 // let mut buf = vec![];
                 // dc.read_to_end(&mut buf);
                 // Ok(buf)
                 todo!()
             },
-            RpmFileIOType::Zstdio => todo!(),
+            Self::Zstdio => todo!(),
         }
     }
 }
@@ -89,7 +89,7 @@ impl std::str::FromStr for RpmFileMode {
         let fail_if_exist = left.contains('x');
         let thread = left.contains('T');
         let iodebug = left.contains('?');
-        Ok(RpmFileMode { append, write, read, fail_if_exist, thread, iodebug, iotype })
+        Ok(Self { append, write, read, fail_if_exist, thread, iodebug, iotype })
     }
 }
 
@@ -126,11 +126,11 @@ impl mlua::UserData for RpmFile {
                 let mut buf = vec![];
                 let size = this.innerfile.read_to_end(&mut buf).into_lua_err()?;
                 buf.truncate(size);
-                return Ok(this.modes.iotype.process(buf)?);
+                return this.modes.iotype.process(buf);
             };
             let mut buf = Vec::with_capacity(len);
             this.innerfile.read_exact(&mut buf).into_lua_err()?;
-            Ok(this.modes.iotype.process(buf)?)
+            this.modes.iotype.process(buf)
         });
         methods.add_method_mut("seek", |_, this, (mode, offset): (String, isize)| {
             this.innerfile
@@ -144,7 +144,7 @@ impl mlua::UserData for RpmFile {
         });
         methods.add_method_mut("write", |_, this, (buf, len): (String, usize)| this.innerfile.write(buf[..len].as_bytes()).into_lua_err());
         methods.add_method_mut("reopen", |_, this, mode: String| {
-            let f = RpmFile::new(this.path.clone(), &mode).into_lua_err()?;
+            let f = Self::new(this.path.clone(), &mode).into_lua_err()?;
             drop(std::mem::replace(this, f));
             Ok(())
         });
@@ -169,16 +169,16 @@ fn repl() {
             match lua.load(&line).eval::<mlua::MultiValue>() {
                 Ok(values) => {
                     editor.add_history_entry(line).unwrap();
-                    println!("{}", values.iter().map(|value| format!("{:#?}", value)).collect::<Vec<_>>().join("\t"));
+                    println!("{}", values.iter().map(|value| format!("{value:#?}")).collect::<Vec<_>>().join("\t"));
                     break;
                 },
                 Err(mlua::Error::SyntaxError { incomplete_input: true, .. }) => {
                     // continue reading input and append it to `line`
-                    line.push_str("\n"); // separate input lines
+                    line.push('\n'); // separate input lines
                     prompt = ">> ";
                 },
                 Err(e) => {
-                    eprintln!("error: {}", e);
+                    eprintln!("error: {e}");
                     break;
                 },
             }

@@ -309,6 +309,7 @@ pub struct RPMRequires {
 }
 
 impl RPMRequires {
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.none.is_empty()
             && self.pre.is_empty()
@@ -328,7 +329,7 @@ impl std::fmt::Display for RPMRequires {
         macro_rules! w {
 			($($attr:ident)*) => {
 				$({
-					let mut name = stringify!($attr);
+					let name = stringify!($attr);
 					if name == "none" {
 						f.write_str("Requires:       ")?;
 						f.write_str(&self.none.join(" "))?;
@@ -336,12 +337,12 @@ impl std::fmt::Display for RPMRequires {
 					} else {
 						f.write_str("Requires(")?;
 						f.write_str(name)?;
-						f.write_str("):");
+						f.write_str("):")?;
 						let mut padding = 5 - name.len();
 						while padding <= 0 {
 							padding += 4;
 						}
-						f.write_str(&" ".repeat(padding));
+						f.write_str(&" ".repeat(padding))?;
 						f.write_str(&self.$attr.join(" "))?;
 						f.write_str("\n")?;
 					}
@@ -1061,7 +1062,7 @@ impl RPMSpec {
                 header.push_str(suffix);
             } else {
                 header.push_str("-n ");
-                header.push_str(&name);
+                header.push_str(name);
             }
             spec.push_str(&header);
             spec.push('\n');
@@ -2028,7 +2029,7 @@ impl SpecParser {
         let res = self._rp_macro(name, reader, &mut buf);
         // we still need to process the macro even if we know it expands to nothing
         // yes `%!?macro_name` is always nothing, same for curly
-        if !matches!(res, Ok(_) | Err(Err::MacroNotFound(_) | Err::MacroUndefined(_))) {
+        if !matches!(res, Ok(()) | Err(Err::MacroNotFound(_) | Err::MacroUndefined(_))) {
             return res.map_err(std::convert::Into::into);
         }
         if qus && (notflag || res.is_err()) {
@@ -2048,7 +2049,7 @@ impl SpecParser {
                 }
                 .into()
             },
-            |_| buf,
+            |()| buf,
         ));
         Ok(())
     }
