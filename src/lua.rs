@@ -8,10 +8,13 @@
 //! aka. `mlua::UserData` \
 //! there are two things: `rpm` and `posix`. See more information:
 //! <https://rpm-software-management.github.io/rpm/manual/lua.html>
-use crate::parse::SpecParser;
-use mlua::{ExternalResult, Lua, Result};
+use crate::{macros::MacroType, parse::SpecParser};
+use base64::{engine::general_purpose::STANDARD, Engine};
+use core::ffi::CStr;
+use mlua::{ExternalError, ExternalResult, Lua, Result, Value};
 use parking_lot::RwLock;
 use std::{
+    ffi::CString,
     io::{Read, Seek, Write},
     str::FromStr,
     sync::Arc,
@@ -195,14 +198,7 @@ macro_rules! __lua {
     ($(mod $ext:ident{$(fn $name:ident$(<$lua:lifetime>)?($p:pat, $ctx:pat, $arg:pat$(=>$at:ty)?)$(: $res:ty)? $body:block)+})+) => {
         $(
             mod $ext {
-                #[allow(unused_imports)]
-                use crate::{macros::MacroType, parse::SpecParser};
-                #[allow(unused_imports)]
-                use base64::{engine::general_purpose::STANDARD, Engine};
-                #[allow(unused_imports)]
-                use mlua::{ExternalError, Result, ExternalResult};
-                use parking_lot::RwLock;
-                use std::sync::Arc;
+                use super::*;
                 $(
                     #[allow(clippy::unnecessary_wraps)]
                     pub fn $name$(<$lua>)?(
@@ -342,7 +338,7 @@ __lua!(
             let cstr = unsafe {
                 // ctermid() can pass in null for current terminal
                 let out = libc::ctermid(std::ptr::null_mut());
-                core::ffi::CStr::from_ptr(out)
+                CStr::from_ptr(out)
             };
             cstr.to_str().map_err(ExternalError::into_lua_err).map(ToOwned::to_owned)
         }
@@ -386,7 +382,7 @@ __lua!(
                     libc::getgrgid(n.round() as u32)
                 },
                 mlua::Value::String(s) => unsafe {
-                    libc::getgrnam(std::ffi::CString::new(s.to_str()?).into_lua_err()?.as_ptr())
+                    libc::getgrnam(CString::new(s.to_str()?).into_lua_err()?.as_ptr())
                 },
                 _ => return Err(mlua::Error::BadArgument {
                     to: Some("getgroup".into()),
@@ -409,8 +405,53 @@ __lua!(
         fn getlogin(_, _, _=>()): String {
             unsafe { core::ffi::CStr::from_ptr(libc::getlogin()).to_str().into_lua_err().map(ToOwned::to_owned) }
         }
-        fn getpasswd(_, _, _=>Vec<String>): String {
-            todo!()
+        fn getpasswd<'lua>(_, lua, args=>(Option<mlua::Value>, Option<String>)): Value<'lua> {
+            let (user, selector) = args;
+            let p = match user {
+                None => unsafe { libc::getpwuid(libc::geteuid()) },
+                Some(mlua::Value::Number(n)) => unsafe { libc::getpwuid(n.round() as u32) },
+                Some(mlua::Value::String(s)) => unsafe {
+                    libc::getpwnam(CString::new(s.to_str()?).into_lua_err()?.as_ptr())
+                },
+                _ => return Err(mlua::Error::BadArgument {
+                    to: Some("getpasswd".into()),
+                    pos: 1,
+                    name: Some("user".into()),
+                    cause: "Only accepts optional Number/String".into_lua_err().into()
+                }),
+            };
+            if p.is_null() {
+                return Err("libc::getpwuid() or libc::getpwnam() returned nullptr; cannot getpasswd()").into_lua_err();
+            }
+            let p = unsafe { *p };
+            let Some(select) = selector else {
+                let t = lua.create_table()?;
+                unsafe {
+                    t.set("name", CStr::from_ptr(p.pw_name).to_str().into_lua_err()?)?;
+                    t.set("uid", p.pw_uid)?;
+                    t.set("gid", p.pw_gid)?;
+                    t.set("dir", CStr::from_ptr(p.pw_dir).to_str().into_lua_err()?)?;
+                    t.set("shell", CStr::from_ptr(p.pw_shell).to_str().into_lua_err()?)?;
+                    t.set("gecos", CStr::from_ptr(p.pw_gecos).to_str().into_lua_err()?)?;
+                    t.set("passwd", CStr::from_ptr(p.pw_passwd).to_str().into_lua_err()?)?;
+                }
+                return Ok(Value::Table(t));
+            };
+            Ok(match &*select {
+                "name" => Value::String(unsafe { lua.create_string(CStr::from_ptr(p.pw_name).to_bytes())? }),
+                "uid" => Value::Number(p.pw_uid as f64),
+                "gid" => Value::Number(p.pw_gid as f64),
+                "dir" => Value::String(unsafe { lua.create_string(CStr::from_ptr(p.pw_dir).to_bytes())? }),
+                "shell" => Value::String(unsafe { lua.create_string(CStr::from_ptr(p.pw_shell).to_bytes())? }),
+                "gecos" => Value::String(unsafe { lua.create_string(CStr::from_ptr(p.pw_gecos).to_bytes())? }),
+                "passwd" => Value::String(unsafe { lua.create_string(CStr::from_ptr(p.pw_passwd).to_bytes())? }),
+                _ => return Err(mlua::Error::BadArgument {
+                    to: Some("getpasswd".into()),
+                    pos: 1,
+                    name: Some("selector".into()),
+                    cause: "Only accepts optional 'name'/'uid'/'gid'/'dir'/'shell'/'gecos'/'passwd'".into_lua_err().into()
+                }),
+            })
         }
         fn getprocessid<'lua>(_, lua, arg=>Option<String>): mlua::Value<'lua> {
             let Some(arg) = arg else {
@@ -444,15 +485,15 @@ __lua!(
             Ok(unsafe { libc::kill(pid, signal) })
         }
         fn link(_, _, (old, new)=>(String, String)): i32 {
-            let old = std::ffi::CString::new(old).into_lua_err()?.as_ptr();
-            let new = std::ffi::CString::new(new).into_lua_err()?.as_ptr();
+            let old = CString::new(old).into_lua_err()?.as_ptr();
+            let new = CString::new(new).into_lua_err()?.as_ptr();
             Ok(unsafe { libc::link(old, new)})
         }
         fn mkdir(_, _, path) {
             std::fs::create_dir(path).map_err(ExternalError::into_lua_err)
         }
         fn mkfifo(_, _, path): i32 {
-            Ok(unsafe { libc::mkfifo(std::ffi::CString::new(path).into_lua_err()?.as_ptr(), 0o777) })
+            Ok(unsafe { libc::mkfifo(CString::new(path).into_lua_err()?.as_ptr(), 0o777) })
         }
         // pathconf() return type???
         fn putenv(_, _, kv) {
@@ -463,18 +504,40 @@ __lua!(
         fn readlink(_, _, path=>String): String {
             let mut cbuf = Vec::with_capacity(512);
             unsafe {
-                libc::readlink(std::ffi::CString::new(path).into_lua_err()?.as_ptr(), cbuf.as_mut_ptr(), 512);
+                libc::readlink(CString::new(path).into_lua_err()?.as_ptr(), cbuf.as_mut_ptr(), 512);
             }
-            unsafe { std::ffi::CStr::from_ptr(cbuf.as_ptr().cast()) }.to_str().map(ToOwned::to_owned).into_lua_err()
+            unsafe { CStr::from_ptr(cbuf.as_ptr().cast()) }.to_str().map(ToOwned::to_owned).into_lua_err()
         }
         fn rmdir(_, _, path) {
             std::fs::remove_dir(path).map_err(ExternalError::into_lua_err)
         }
-        fn setgid(_, _, _) {
-            todo!()
+        fn setgid(_, _, arg=>mlua::Value): i32 {
+            let gid = match arg {
+                mlua::Value::Number(n) => n.round() as u32,
+                mlua::Value::String(s) => unsafe {
+                    let p = libc::getgrnam(CString::new(s.to_str()?).into_lua_err()?.as_ptr());
+                    if p.is_null() {
+                        return Err("libc::getgrnam() returned nullptr; can't get gid").into_lua_err();
+                    }
+                    (*p).gr_gid
+                },
+                _ => return Err("Bad argument type to setgid(), accepts String/Number").into_lua_err(),
+            };
+            Ok(unsafe { libc::setgid(gid) })
         }
-        fn setuid(_, _, _) {
-            todo!()
+        fn setuid(_, _, arg=>mlua::Value): i32 {
+            let uid = match arg {
+                mlua::Value::Number(n) => n.round() as u32,
+                mlua::Value::String(s) => unsafe {
+                    let p = libc::getpwnam(CString::new(s.to_str()?).into_lua_err()?.as_ptr());
+                    if p.is_null() {
+                        return Err("libc::getpwnam() returned nullptr; can't get uid").into_lua_err();
+                    }
+                    (*p).pw_uid
+                },
+                _ => return Err("Bad argument type to setuid(), accepts String/Number").into_lua_err(),
+            };
+            Ok(unsafe { libc::setuid(uid) })
         }
         fn sleep(_, _, seconds=>u64) {
             std::thread::sleep(std::time::Duration::from_secs(seconds));
@@ -483,8 +546,8 @@ __lua!(
         // stat() return type???
         fn symlink(_, _, paths=>(String, String)) {
             let (path1, path2) = paths;
-            let path1 = std::ffi::CString::new(path1).map_err(ExternalError::into_lua_err)?;
-            let path2 = std::ffi::CString::new(path2).map_err(ExternalError::into_lua_err)?;
+            let path1 = CString::new(path1).map_err(ExternalError::into_lua_err)?;
+            let path2 = CString::new(path2).map_err(ExternalError::into_lua_err)?;
             if unsafe { libc::symlink(path1.as_ptr(), path2.as_ptr()) } != 0 {
                 return Err("libc::symlink() returned -1".into_lua_err())
             }
@@ -493,13 +556,59 @@ __lua!(
         // sysconf() return type???
         // times() return type???
         fn ttyname(_, _, fd=>Option<i32>): String {
-            Ok(unsafe { std::ffi::CStr::from_ptr(libc::ttyname(fd.unwrap_or(0))) }.to_string_lossy().to_string())
+            Ok(unsafe { CStr::from_ptr(libc::ttyname(fd.unwrap_or(0))) }.to_string_lossy().to_string())
         }
-        fn umask(_, _, _=>Option<String>): String {
-            todo!()
+        fn umask(_, _, arg=>mlua::Value): String {
+            let mode = match arg {
+                mlua::Value::Number(n) => umask::Mode::from({
+                    let mut n = n.round() as u32;
+                    let hundred = n / 100;
+                    let mut oct = hundred * 0o100;
+                    n -= hundred * 100;
+                    let tenth = n / 10;
+                    oct += tenth * 0o10;
+                    n -= tenth * 10;
+                    oct += n;
+                    if oct > 0o777 {
+                        return Err("oct value passed into umask() exceeds 0o777").into_lua_err();
+                    }
+                    oct
+                }),
+                mlua::Value::String(s) => s.to_str()?.parse().into_lua_err()?,
+                mlua::Value::Nil => umask::Mode::from(0),
+                _ => return Err("Bad argument type to umask(), accepts optional String/Number").into_lua_err(),
+            };
+            Ok(umask::Mode::from(unsafe { libc::umask(mode.into()) }).to_string())
+
         }
-        fn uname(_, _, _): String {
-            todo!()
+        fn uname(_, _, format): String {
+            let u = std::ptr::null_mut();
+            if unsafe { libc::uname(u) } == -1 {
+                return Err("libc::uname() returned -1").into_lua_err();
+            }
+            let u = unsafe { *u };
+            let mut res = String::new();
+            let mut chars = format.chars();
+            while let Some(c) = chars.next() {
+                if c == '%' {
+                    let Some(next) = chars.next() else {
+                        res.push('%');
+                        return Ok(res);
+                    };
+                    match next {
+                        '%' => res.push('%'),
+                        'm' => res.push_str(unsafe { CStr::from_ptr(u.machine.as_ptr()) }.to_str().into_lua_err()?),
+                        'n' => res.push_str(unsafe { CStr::from_ptr(u.nodename.as_ptr()) }.to_str().into_lua_err()?),
+                        'r' => res.push_str(unsafe { CStr::from_ptr(u.release.as_ptr()) }.to_str().into_lua_err()?),
+                        's' => res.push_str(unsafe { CStr::from_ptr(u.sysname.as_ptr()) }.to_str().into_lua_err()?),
+                        'v' => res.push_str(unsafe { CStr::from_ptr(u.version.as_ptr()) }.to_str().into_lua_err()?),
+                        _ => return Err(format!("Bad format option `%{next}` for uname()")).into_lua_err(),
+                    }
+                    continue;
+                }
+                res.push(c);
+            }
+            Ok(res)
         }
         fn utime(_, _, (path, mtime, ctime)=>(String, Option<i64>, Option<i64>)): i32 {
             let currtime = unsafe { libc::time(std::ptr::null_mut()) };
@@ -507,7 +616,7 @@ __lua!(
             let actime = ctime.unwrap_or(currtime);
             let times = libc::utimbuf { modtime, actime };
             Ok(unsafe { libc::utime(
-                std::ffi::CString::new(path).into_lua_err()?.as_ptr(),
+                CString::new(path).into_lua_err()?.as_ptr(),
                 std::ptr::from_ref(&times)
             )})
         }

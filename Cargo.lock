@@ -704,6 +704,7 @@ dependencies = [
  "smartstring",
  "thiserror",
  "tracing",
+ "umask",
  "url",
  "xz",
  "zstd",
@@ -966,6 +967,15 @@ dependencies = [
  "sharded-slab",
  "thread_local",
  "tracing-core",
+]
+
+[[package]]
+name = "umask"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec9a46c2549e35c054e0ffe281a3a6ec0007793db4df106604d37ed3f4d73d1c"
+dependencies = [
+ "thiserror",
 ]
 
 [[package]]
