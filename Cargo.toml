@@ -41,6 +41,7 @@ xz = "0.1.0"
 zstd = "0.13.1"
 mlua = { version = "0.9.8", features = ["luajit"] }
 umask = "2.1.0"
+itertools = "0.13.0"
 
 [workspace]
 members = [

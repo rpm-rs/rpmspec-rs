@@ -54,6 +54,18 @@ macro_rules! gen_read_helper {
                 }
             };
         }
+        #[allow(unused_macros)]
+        macro_rules! exit_if_eof {
+            () => {
+                if $reader.is_eof() {
+                    exit!();
+                }
+            };
+            (else $method:ident) => {{
+                let Some(x) = $reader.$method() else { exit!(); };
+                x
+            }};
+        }
     };
 }
 
@@ -88,6 +100,22 @@ impl<R: Read + ?Sized> Consumer<R> {
     #[inline]
     pub fn back(&mut self) {
         self.pos -= 1;
+    }
+    pub fn until(&mut self, f: impl Fn(char) -> bool) {
+        while let Some(ch) = self.next() {
+            if f(ch) {
+                self.back();
+                break;
+            }
+        }
+    }
+    pub fn peek(&mut self) -> Option<char> {
+        let out = self.next();
+        self.back();
+        out
+    }
+    pub fn is_eof(&mut self) -> bool {
+        self.peek().is_none()
     }
     // TODO: Result<> instead
     pub fn read_til_eol(&mut self) -> Option<String> {

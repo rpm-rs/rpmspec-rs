@@ -2,6 +2,7 @@
 use crate::macros::MacroType;
 use crate::util::{textproc, Consumer};
 use color_eyre::{eyre::eyre, Help, Result, SectionExt};
+use itertools::Itertools;
 use lazy_format::lazy_format as lzf;
 use parking_lot::RwLock;
 use regex::Regex;
@@ -463,9 +464,9 @@ pub enum VerifyFileMod {
 impl VerifyFileMod {
     /// Returns all the possible arguments to `%verify`
     #[must_use]
-    pub fn all() -> Box<[Self]> {
+    pub fn all() -> Vec<Self> {
         use VerifyFileMod::{Group, Maj, Md5, Min, Mode, Mtime, Owner, Size, Symlink};
-        vec![Owner, Group, Mode, Md5, Size, Maj, Min, Symlink, Mtime].into_boxed_slice()
+        vec![Owner, Group, Mode, Md5, Size, Maj, Min, Symlink, Mtime]
     }
 }
 
@@ -608,14 +609,12 @@ impl RPMFiles {
                             return Ok(f);
                         }
                         if name.starts_with("%verify(") {
-                            let mut vs: Vec<_> = x.split(' ').map(VerifyFileMod::from).collect();
-                            for v in &vs {
-                                if let VerifyFileMod::None(s) = v {
-                                    return Err(eyre!("`%verify({s})` is unknown"));
-                                }
+                            let mut vs = x.split(' ').map_into().collect_vec();
+                            if let Some(VerifyFileMod::None(s)) = vs.iter().find(|s| matches!(s, VerifyFileMod::None(_))) {
+                                return Err(eyre!("`%verify({s})` is unknown"));
                             }
                             if vs.contains(&VerifyFileMod::Not) {
-                                let mut ll = VerifyFileMod::all().to_vec();
+                                let mut ll = VerifyFileMod::all();
                                 ll.retain(|x| !vs.contains(x));
                                 vs = ll;
                             }
@@ -1126,8 +1125,13 @@ impl RPMSpec {
             todo!()
         }
 
-        todo!()
-        // spec
+        if !self.changelog.raw.is_empty() {
+            spec.push_str(&self.changelog.raw);
+        } else {
+            todo!()
+        }
+
+        spec
     }
 }
 
@@ -1163,7 +1167,7 @@ impl SpecParser {
                 out.push(ch);
                 continue;
             }
-            self._use_raw_macro(out, reader)?;
+            self._start_parse_raw_macro(out, reader)?;
         }
         Ok(())
     }
@@ -1180,7 +1184,7 @@ impl SpecParser {
         let expr = parser.parse(&*reader.collect::<String>())?;
         out.push_str(
             &expr
-                .eval(&mut |out, m| self._use_raw_macro::<std::fs::File>(out, &mut Consumer::new(Arc::new(parking_lot::RwLock::new(m)), None, Arc::from(std::path::Path::new("<expr>")))))?
+                .eval(&mut |out, m| self._start_parse_raw_macro::<std::fs::File>(out, &mut Consumer::new(Arc::new(parking_lot::RwLock::new(m)), None, Arc::from(std::path::Path::new("<expr>")))))?
                 .to_string(),
         );
         Ok(())
@@ -1774,21 +1778,14 @@ impl SpecParser {
         // if there's a space, it's `%macro_name ...`
         // otherwise it's most likely `%{macro_name:...}`
         // but yeah we'll have to trim it anyway
-        while let Some(ch) = reader.next() {
-            if !ch.is_whitespace() {
-                reader.back();
-                break;
-            }
-        }
+        reader.until(|ch| !ch.is_whitespace());
         'main: while let Some(ch) = reader.next() {
             if ch == '%' {
-                let ch = next!(~'%');
-                if ch == '%' {
+                if exit_if_eof!(else peek) == '%' {
                     content.push('%');
                     continue;
                 }
-                reader.back();
-                self._use_raw_macro(&mut content, reader)?;
+                self._start_parse_raw_macro(&mut content, reader)?;
                 continue;
             }
             if ch == '-' {
@@ -1807,17 +1804,15 @@ impl SpecParser {
                 continue;
             }
             if ch == '\\' {
-                let mut got_newline = false;
+                // if the line ends with `\` (excl whitespace) then also parse next line
                 content = content.trim_end().into();
                 content.push(' ');
                 while let Some(ch) = reader.next() {
                     if ch == '\n' {
-                        got_newline = true;
-                    } else if !ch.is_whitespace() {
-                        if got_newline {
-                            reader.back();
-                            continue 'main;
-                        }
+                        reader.until(|ch| !ch.is_whitespace());
+                        continue 'main;
+                    }
+                    if !ch.is_whitespace() {
                         return Err(eyre!("Got `{ch}` after `\\` before new line"));
                     }
                 }
@@ -1828,7 +1823,7 @@ impl SpecParser {
             }
             textproc::chk_ps(&mut quotes, ch)?;
             // compress whitespace to ' '
-            if ch.is_whitespace() && content.chars().last().map_or(false, |l| !l.is_whitespace()) {
+            if ch.is_whitespace() && content.chars().last().is_some_and(|l| !l.is_whitespace()) {
                 content.push(' ');
             } else if !ch.is_whitespace() {
                 content.push(ch);
@@ -1878,7 +1873,7 @@ impl SpecParser {
         };
         if !content.starts_with('-') {
             // normal %macros
-            self._use_raw_macro(res, &mut def.range(def.pos - content.len() - 2..def.pos).expect("Cannot unwind consumer to `{...}`"))?;
+            self._start_parse_raw_macro(res, &mut def.range(def.pos - content.len() - 2..def.pos).expect("Cannot unwind consumer to `{...}`"))?;
             return Ok(());
         }
         if let Some(content) = content.strip_suffix('*') {
@@ -1957,14 +1952,14 @@ impl SpecParser {
                 },
                 _ => {
                     def.back();
-                    self._use_raw_macro(out, def)?;
+                    self._start_parse_raw_macro(out, def)?;
                 },
             }
         }
         exit!();
     }
 
-    pub(crate) fn _rp_macro<R: Read>(&mut self, name: &str, reader: &mut Consumer<R>, out: &mut String) -> Result<(), Err> {
+    pub(crate) fn _find_macro_and_expand<R: Read>(&mut self, name: &str, reader: &mut Consumer<R>, out: &mut String) -> Result<(), Err> {
         debug!("getting %{name}");
         let Some(def) = self.macros.get(name) else {
             return Err(Err::MacroNotFound(name.into()));
@@ -2048,17 +2043,19 @@ impl SpecParser {
     /// when %a is undefined, %{!a} expands to %{!a}, but %!a expands to %a.
     fn _macro_expand_flagproc<R: std::io::Read>(&mut self, qus: bool, notflag: bool, reader: &mut Consumer<R>, name: &str, out: &mut String, curly: bool) -> Result<()> {
         let mut buf = String::new();
-        let res = self._rp_macro(name, reader, &mut buf);
+        let res = self._find_macro_and_expand(name, reader, &mut buf);
         // we still need to process the macro even if we know it expands to nothing
         // yes `%!?macro_name` is always nothing, same for curly
         if !matches!(res, Ok(()) | Err(Err::MacroNotFound(_) | Err::MacroUndefined(_))) {
-            return res.map_err(std::convert::Into::into);
+            return res.map_err(Into::into);
         }
         if qus && (notflag || res.is_err()) {
             return Ok(());
         }
         out.push_str(&res.map_or_else(
             |e| {
+                // NOTE: `_find_macro_and_expand()` was once called `_rp_macro()` (replace-process
+                // macro?)
                 debug!("_rp_macro: {e:#}");
                 if curly {
                     if notflag {
@@ -2078,7 +2075,7 @@ impl SpecParser {
 
     /// Parse the stuff after %, and determines `{[()]}`.
     /// FIXME: please REFACTOR me!!
-    pub fn _use_raw_macro<R: Read>(&mut self, out: &mut String, chars: &mut Consumer<R>) -> Result<(), Err> {
+    pub fn _start_parse_raw_macro<R: Read>(&mut self, out: &mut String, chars: &mut Consumer<R>) -> Result<(), Err> {
         let (mut notflag, mut question, mut first) = (false, false, true);
         let (mut content, mut quotes) = (String::new(), String::new());
         gen_read_helper!(chars quotes);
@@ -2096,6 +2093,11 @@ impl SpecParser {
             }
             textproc::chk_ps(&mut quotes, ch)?; // we read until we encounter '}' or ':' or the end
             match ch {
+                '{' | '[' | '(' if notflag || question => {
+                    error!("You are not supposed to follow `{{` or `[` or `(` after flags (`!` or `?`).");
+                    chars.back();
+                    break;
+                },
                 '{' | '[' | '(' if !content.is_empty() => {
                     textproc::back(chars, &mut quotes, ch)?;
                     break;
@@ -2131,15 +2133,13 @@ impl SpecParser {
                         }
                         match textproc::flag(&mut question, &mut notflag, &mut first, ch) {
                             Some(true) => continue,
-                            Some(false) => {},
+                            Some(false) => name.push(ch),
                             None => return Err(eyre!("Unexpected flag `{ch}` in %{{...?...}}").into()),
                         }
-                        name.push(ch);
                     }
                     return Err(eyre!("EOF while parsing `%{{...`").into());
                 },
                 '[' => {
-                    first = true;
                     if notflag || question {
                         error!("flags (! and ?) are not supported for %[].");
                     }
@@ -2223,7 +2223,7 @@ mod tests {
         let mut parser = super::SpecParser::new();
         parser.macros.insert("macrohai".into(), vec!["hai hai".into()]);
         let mut out = String::new();
-        parser._use_raw_macro::<RR>(&mut out, &mut ("macrohai".into()))?;
+        parser._start_parse_raw_macro::<RR>(&mut out, &mut ("macrohai".into()))?;
         assert_eq!(out, "hai hai");
         Ok(())
     }
@@ -2234,7 +2234,7 @@ mod tests {
         parser.macros.insert("mhai".into(), vec!["hai hai".into()]);
         parser.macros.insert("quadhai".into(), vec!["%mhai %{mhai}".into()]);
         let mut out = String::new();
-        parser._use_raw_macro::<RR>(&mut out, &mut ("quadhai".into()))?;
+        parser._start_parse_raw_macro::<RR>(&mut out, &mut ("quadhai".into()))?;
         assert_eq!(out, "hai hai hai hai");
         Ok(())
     }
@@ -2247,7 +2247,7 @@ mod tests {
         parser.macros.insert("idk2".into(), vec!["%{?mhai} %{!mhai} %{!?mhai} %{?!mhai}".into()]);
         parser.macros.insert("aaa".into(), vec!["%idk %idk2".into()]);
         let mut out = String::new();
-        parser._use_raw_macro::<RR>(&mut out, &mut ("aaa".into()))?;
+        parser._start_parse_raw_macro::<RR>(&mut out, &mut ("aaa".into()))?;
         assert_eq!(out, "  hai hai hai hai hai hai  ");
         Ok(())
     }
@@ -2257,7 +2257,7 @@ mod tests {
         let mut parser = super::SpecParser::new();
         parser.macros.insert("x".into(), vec!["%(echo haai | sed 's/a/aa/g')".into()]);
         let mut out = String::new();
-        parser._use_raw_macro::<RR>(&mut out, &mut ("x".into()))?;
+        parser._start_parse_raw_macro::<RR>(&mut out, &mut ("x".into()))?;
         assert_eq!(out, "haaaai");
         Ok(())
     }
@@ -2276,11 +2276,11 @@ mod tests {
         let mut parser = super::SpecParser::new();
         parser.macros.insert("x".into(), vec!["%{?not_exist:hai}%{!?not_exist:bai}".into()]);
         let mut out = String::new();
-        parser._use_raw_macro::<RR>(&mut out, &mut ("x".into()))?;
+        parser._start_parse_raw_macro::<RR>(&mut out, &mut ("x".into()))?;
         assert_eq!(out, "bai");
         parser.macros.insert("not_exist".into(), vec!["wha".into()]);
         out = String::new();
-        parser._use_raw_macro::<RR>(&mut out, &mut ("x".into()))?;
+        parser._start_parse_raw_macro::<RR>(&mut out, &mut ("x".into()))?;
         assert_eq!(out, "hai");
         Ok(())
     }
