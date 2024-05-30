@@ -71,7 +71,7 @@ impl FromStr for PkgQCond {
 ///
 /// # Examples
 /// ```
-/// use rpmspec_rs::parse::Package;
+/// use rpmspec::parse::Package;
 ///
 /// let pkg = Package::new("anda".into());
 ///
@@ -112,7 +112,7 @@ impl Package {
     ///
     /// # Examples
     /// ```
-    /// use rpmspec_rs::parse::Package;
+    /// use rpmspec::parse::Package;
     ///
     /// let mut pkgs = vec![];
     /// Package::add_simple_query(&mut pkgs, "anda, subatomic rpm_macro(fdupes) pkgconfig(gio-2.0)".into())?;
@@ -188,7 +188,7 @@ impl Package {
     /// # Examples
     ///
     /// ```
-    /// use rpmspec_rs::parse::{Package, PkgQCond};
+    /// use rpmspec::parse::{Package, PkgQCond};
     ///
     /// let mut pkgs = vec![];
     /// let query = "hai, bai >= 3.0 another-pkg".into();
@@ -660,7 +660,7 @@ impl RPMFiles {
 ///
 /// # Example
 /// ```
-/// use rpmspec_rs::parse::Changelog;
+/// use rpmspec::parse::Changelog;
 ///
 /// let mut changelog = Changelog {
 ///   date: chrono::NaiveDate::from_ymd_opt(2006, 1, 11).ok_or_else(|| color_eyre::eyre::eyre!("Cannot turn 2006-01-11 into NaiveDate"))?,
@@ -697,7 +697,7 @@ pub struct Changelog {
 /// ```
 /// in rust:
 /// ```
-/// let mut cl = rpmspec_rs::parse::Changelogs::default();
+/// let mut cl = rpmspec::parse::Changelogs::default();
 /// cl.raw = r#"
 /// * Wed Jan 11 2006 madomado <madonuko@outlook.com> - 1.11.0-6
 /// - messages here
@@ -729,7 +729,7 @@ impl Changelogs {
     /// ```
     /// in rust:
     /// ```
-    /// let mut cl = rpmspec_rs::parse::Changelogs::default();
+    /// let mut cl = rpmspec::parse::Changelogs::default();
     /// cl.raw = r#"
     /// * Wed Jan 11 2006 madomado <madonuko@outlook.com> - 1.11.0-6
     /// - messages here
@@ -946,7 +946,7 @@ impl RPMSpec {
     /// # Examples
     ///
     /// ```
-    /// use rpmspec_rs::parse::RPMSpec;
+    /// use rpmspec::parse::RPMSpec;
     ///
     /// assert_eq!(RPMSpec::new(), RPMSpec {
     ///   autoreqprov: true,
@@ -1136,8 +1136,8 @@ impl RPMSpec {
 /// # Examples
 /// ```
 /// use std::{sync::Arc, path::Path};
-/// let mut parser = rpmspec_rs::parse::SpecParser::new();
-/// parser.parse::<&[u8]>(std::io::BufReader::new(Box::from(b"%define hai bai\nName: %hai" as &[u8])), Arc::from(Path::new("world.spec")))?;
+/// let mut parser = rpmspec::parse::SpecParser::new();
+/// parser.parse::<&[u8]>(std::io::BufReader::new(Box::from(b"%define hai bai\nName: %hai" as &[u8])), &Arc::from(Path::new("world.spec")))?;
 /// assert_eq!(parser.rpm.name, Some("bai".into()));
 /// # Ok::<(), color_eyre::Report>(())
 /// ```
@@ -1298,7 +1298,29 @@ impl SpecParser {
             let path = path.replace("%{_target}", Self::arch()?.as_str());
             debug!(": {path}");
             for path in glob::glob(path.as_str())? {
-                self.load_macro_from_file(&path?)?;
+                let p = path?;
+                let metadata = p.metadata()?;
+                if metadata.is_dir() {
+                    self._load_macros_in_dir(p.as_path())?;
+                } else if metadata.is_file() {
+                    self.load_macro_from_file(&p)?;
+                } else {
+                    return Err(eyre!("Unknown file type in load_macros for {p:?}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn _load_macros_in_dir(&mut self, dir: &Path) -> Result<()> {
+        for path in std::fs::read_dir(dir)? {
+            let path = path?;
+            if path.metadata()?.is_dir() {
+                self._load_macros_in_dir(&path.path())?;
+            } else if path.metadata()?.is_file() {
+                self.load_macro_from_file(&path.path())?;
+            } else {
+                return Err(eyre!("Unknown file type in _load_macros_in_dir for {path:?}"));
             }
         }
         Ok(())
@@ -2079,6 +2101,7 @@ impl SpecParser {
                     break;
                 },
                 '{' => {
+                    first = true;
                     let mut name = String::new();
                     while let Some(ch) = chars.next() {
                         textproc::chk_ps(&mut quotes, ch)?;
@@ -2116,6 +2139,7 @@ impl SpecParser {
                     return Err(eyre!("EOF while parsing `%{{...`").into());
                 },
                 '[' => {
+                    first = true;
                     if notflag || question {
                         error!("flags (! and ?) are not supported for %[].");
                     }
