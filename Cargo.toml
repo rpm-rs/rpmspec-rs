@@ -48,3 +48,6 @@ members = [
   "rpmexpr",
   "rpmspec-common",
 ]
+
+[dev-dependencies]
+tracing-subscriber = "0.3.18"

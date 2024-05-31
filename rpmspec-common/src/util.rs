@@ -141,9 +141,11 @@ impl<R: Read + ?Sized> Consumer<R> {
         'main: while let Some(ch) = self.next() {
             if ch == '\0' {
                 // idk how it happens
+                tracing::warn!("Found null byte");
                 break;
             }
             if ch == '\n' {
+                out.push('\n');
                 break;
             }
             if "([{".contains(ch) {
@@ -151,9 +153,9 @@ impl<R: Read + ?Sized> Consumer<R> {
                 continue;
             }
             if ch == '\'' {
-                ps.push('\'');
+                out.push('\'');
                 for ch in self.by_ref() {
-                    ps.push(ch);
+                    out.push(ch);
                     if ch == '\'' {
                         continue 'main;
                     }
@@ -162,9 +164,9 @@ impl<R: Read + ?Sized> Consumer<R> {
                 return None;
             }
             if ch == '"' {
-                ps.push('"');
+                out.push('"');
                 for ch in self.by_ref() {
-                    ps.push(ch);
+                    out.push(ch);
                     if ch == '"' {
                         continue 'main;
                     }

@@ -1407,27 +1407,25 @@ impl SpecParser {
     ///
     /// # Panics
     /// - Cannot unwind Consumer (cannot read something that has been read)
-    pub fn _handle_section(&mut self, l: &str, consumer: &mut Consumer<impl Read>) -> Result<bool> {
-        if l.contains('\n') {
-            return Ok(false);
-        }
-        if let Some((false, _)) = self.cond.last() {
-            return Ok(true); // false condition, skip parsing
-        }
-        let Some((start, remain)) = l.split_once(' ') else {
-            return Ok(false);
-        };
-        let remain = remain.trim();
+    pub fn _handle_section(&mut self, l: &str, consumer: &mut Consumer<impl Read>, oldpos: usize) -> Result<bool> {
+        let (start, remain) = l.split_once(|ch: char| ch.is_whitespace()).unwrap_or((l.trim(), ""));
+        let mut parsed_remain = String::new();
+        self.parse_macro(&mut parsed_remain, &mut consumer.range(oldpos + start.len() + 1..consumer.pos).unwrap())?;
+        let remain = parsed_remain.trim();
         if !(start.starts_with('%') && start.chars().nth(1) != Some('%')) {
             return Ok(false);
         }
         if self._handle_conditions(&start[1..], remain)? {
             return Ok(true);
         }
+        if let Some((false, _)) = self.cond.last() {
+            return Ok(true); // false condition, skip parsing
+        }
+        let remainpos = oldpos + start.len() + 1;
         self.section = match &start[1..] {
             "description" if remain.is_empty() => RPMSection::Description("".into()),
             "description" => RPMSection::Description({
-                let mut remaincsm = consumer.range(consumer.pos - remain.len()..consumer.pos).expect("Cannot unwind Consumer");
+                let mut remaincsm = consumer.range(remainpos..consumer.pos).expect("Cannot unwind Consumer");
                 let (_, mut args, flags) = self._param_macro_args(&mut remaincsm).map_err(|e| e.wrap_err("Cannot parse arguments to %description"))?;
                 if let Some(x) = flags.iter().find(|x| **x != 'n') {
                     return Err(eyre!("Unexpected %description flag `-{x}`"));
@@ -1443,7 +1441,7 @@ impl SpecParser {
             }),
             "package" if remain.is_empty() => return Err(eyre!("Expected arguments to %package")),
             "package" => {
-                let mut remaincsm = consumer.range(consumer.pos - remain.len()..consumer.pos).expect("Cannot unwind Consumer");
+                let mut remaincsm = consumer.range(remainpos..consumer.pos).expect("Cannot unwind Consumer");
                 let (_, mut args, flags) = self._param_macro_args(&mut remaincsm).map_err(|e| e.wrap_err("Cannot parse arguments to %package"))?;
                 if let Some(x) = flags.iter().find(|x| **x != 'n') {
                     return Err(eyre!("Unexpected %package flag `-{x}`"));
@@ -1521,17 +1519,21 @@ impl SpecParser {
     ///   `self.rpm.packages` and would panic if it was not found. This'd be a bug.
     pub fn parse<R: Read>(&mut self, bufread: BufReader<Box<R>>, path: &Arc<Path>) -> Result<()> {
         let mut consumer: Consumer<R> = Consumer::new(Arc::default(), Some(Arc::new(bufread.into())), Arc::clone(path));
+        let mut old_pos = 0;
         while let Some(rawline) = consumer.read_til_eol() {
+            let rawline = rawline.trim();
+            warn!("{rawline}");
+            if self._handle_section(&rawline, &mut consumer, old_pos)? {
+                continue;
+            }
             let mut line = String::new();
-            // unwrap: should be safe because we read it already from `rawline`
-            self.parse_macro(&mut line, &mut consumer.range(consumer.pos - rawline.len() - 1..consumer.pos).expect("Cannot unwind Consumer"))?;
+            self.parse_macro(&mut line, &mut consumer.range(old_pos..consumer.pos).expect("Cannot unwind Consumer"))?;
+            old_pos = consumer.pos;
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') || RE_DNL.is_match(line) {
                 continue;
             }
-            if self._handle_section(line, &mut consumer)? {
-                continue;
-            }
+            debug!(section=?self.section, "Handling section");
             match self.section {
                 RPMSection::Global | RPMSection::Package(_) => {
                     // Check for Requires special preamble syntax first
@@ -1543,14 +1545,13 @@ impl SpecParser {
                         continue;
                     };
                     // check for list_preambles
-                    let Some(strdigit) = &cap[1].strip_suffix(char::is_numeric) else {
+                    let Some(list_preamble_name) = &cap[1].strip_suffix(char::is_numeric) else {
                         let offset = consumer.pos - cap[2].len();
                         self.add_preamble(&cap[1], cap[2].into(), Arc::clone(path), offset)?;
                         continue;
                     };
-                    let digit = strdigit.parse()?;
-                    let name = &cap[1][..cap[1].len() - strdigit.len()];
-                    self.add_list_preamble(name, digit, &cap[2])?;
+                    let digit = cap[1][list_preamble_name.len()..].parse()?;
+                    self.add_list_preamble(&list_preamble_name, digit, &cap[2])?;
                 },
                 RPMSection::Description(ref mut p) => {
                     if p.is_empty() {
@@ -1764,6 +1765,7 @@ impl SpecParser {
     }
 
     // TODO: optimizations?
+    #[tracing::instrument(skip(self, reader))]
     fn _param_macro_args(&mut self, reader: &mut Consumer<impl Read>) -> Result<(String, Vec<String>, Vec<char>)> {
         // we start AFTER %macro_name
         let (mut content, mut quotes, mut flags) = (String::new(), String::new(), vec![]);
@@ -1793,11 +1795,10 @@ impl SpecParser {
                 if !ch.is_ascii_alphabetic() {
                     return Err(eyre!("Argument flag `-{ch}` in parameterized macro is not alphabetic"));
                 }
-                let next = next!(#);
+                let next = exit_if_eof!(else peek);
                 if !"\\ \n".contains(next) {
                     return Err(eyre!("Found character `{next}` after `-{ch}` in parameterized macro"));
                 }
-                reader.back();
                 flags.push(ch);
                 content.push('-');
                 content.push(ch);
@@ -1903,6 +1904,7 @@ impl SpecParser {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, def, reader))]
     fn _param_macro(&mut self, name: &str, def: &mut Consumer<impl Read>, reader: &mut Consumer<impl Read>, out: &mut String) -> Result<()> {
         let (raw_args, args, flags) = self._param_macro_args(reader)?;
         let mut quotes = String::new();
@@ -2041,6 +2043,7 @@ impl SpecParser {
     /// Expand macros depending on `notflag`.
     ///
     /// when %a is undefined, %{!a} expands to %{!a}, but %!a expands to %a.
+    #[tracing::instrument(skip(self, reader))]
     fn _macro_expand_flagproc<R: std::io::Read>(&mut self, qus: bool, notflag: bool, reader: &mut Consumer<R>, name: &str, out: &mut String, curly: bool) -> Result<()> {
         let mut buf = String::new();
         let res = self._find_macro_and_expand(name, reader, &mut buf);
@@ -2075,11 +2078,13 @@ impl SpecParser {
 
     /// Parse the stuff after %, and determines `{[()]}`.
     /// FIXME: please REFACTOR me!!
+    #[tracing::instrument(skip(self, chars))]
     pub fn _start_parse_raw_macro<R: Read>(&mut self, out: &mut String, chars: &mut Consumer<R>) -> Result<(), Err> {
         let (mut notflag, mut question, mut first) = (false, false, true);
         let (mut content, mut quotes) = (String::new(), String::new());
         gen_read_helper!(chars quotes);
         while let Some(ch) = chars.next() {
+            error!("{content} | {ch}");
             match textproc::flag(&mut question, &mut notflag, &mut first, ch) {
                 Some(true) => continue,
                 Some(false) => {},
@@ -2199,10 +2204,13 @@ mod tests {
 
     #[test]
     fn parse_spec() -> Result<()> {
+        tracing_subscriber::FmtSubscriber::builder().pretty().with_max_level(tracing::Level::TRACE).init();
         let f = File::open("./tests/test.spec")?;
         let f = BufReader::new(Box::new(f));
 
         let mut sp = SpecParser::new();
+        sp.load_macros()?;
+        sp.macros.insert("nil".into(), vec!["".into()]); // FIXME
         sp.parse(f, &Arc::from(Path::new("./tests/test.spec")))?;
         println!("Name: {}", sp.rpm.name.unwrap_or_default());
         println!("Summary: {}", sp.rpm.summary.unwrap_or_default());
