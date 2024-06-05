@@ -1408,13 +1408,17 @@ impl SpecParser {
     /// # Panics
     /// - Cannot unwind Consumer (cannot read something that has been read)
     pub fn _handle_section(&mut self, l: &str, consumer: &mut Consumer<impl Read>, oldpos: usize) -> Result<bool> {
-        let (start, remain) = l.split_once(|ch: char| ch.is_whitespace()).unwrap_or((l.trim(), ""));
+        // FIXME: optimizations?
+        let (start, _) = l.split_once(|ch: char| ch.is_whitespace()).unwrap_or((l.trim(), ""));
+        if !(start.starts_with('%') && start.chars().nth(1) != Some('%')) {
+            if let Some((false, _)) = self.cond.last() {
+                return Ok(true); // false condition, skip parsing
+            }
+            return Ok(false);
+        }
         let mut parsed_remain = String::new();
         self.parse_macro(&mut parsed_remain, &mut consumer.range(oldpos + start.len() + 1..consumer.pos).unwrap())?;
         let remain = parsed_remain.trim();
-        if !(start.starts_with('%') && start.chars().nth(1) != Some('%')) {
-            return Ok(false);
-        }
         if self._handle_conditions(&start[1..], remain)? {
             return Ok(true);
         }
@@ -1462,6 +1466,9 @@ impl SpecParser {
             "files" => {
                 let (mut f, mut name, mut remains) = (None, String::new(), remain.split(' '));
                 while let Some(remain) = remains.next() {
+                    if remain.is_empty() {
+                        break; // idk why this happens?
+                    }
                     if let Some(flag) = remain.strip_prefix('-') {
                         match flag {
                             "f" => {
@@ -1521,14 +1528,15 @@ impl SpecParser {
         let mut consumer: Consumer<R> = Consumer::new(Arc::default(), Some(Arc::new(bufread.into())), Arc::clone(path));
         let mut old_pos = 0;
         while let Some(rawline) = consumer.read_til_eol() {
+            let older_pos = old_pos;
+            old_pos = consumer.pos;
             let rawline = rawline.trim();
             warn!("{rawline}");
-            if self._handle_section(&rawline, &mut consumer, old_pos)? {
+            if self._handle_section(&rawline, &mut consumer, older_pos)? {
                 continue;
             }
             let mut line = String::new();
-            self.parse_macro(&mut line, &mut consumer.range(old_pos..consumer.pos).expect("Cannot unwind Consumer"))?;
-            old_pos = consumer.pos;
+            self.parse_macro(&mut line, &mut consumer.range(older_pos..consumer.pos).expect("Cannot unwind Consumer"))?;
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') || RE_DNL.is_match(line) {
                 continue;
@@ -1547,7 +1555,7 @@ impl SpecParser {
                     // check for list_preambles
                     let Some(list_preamble_name) = &cap[1].strip_suffix(char::is_numeric) else {
                         let offset = consumer.pos - cap[2].len();
-                        self.add_preamble(&cap[1], cap[2].into(), Arc::clone(path), offset)?;
+                        self.add_preamble(&cap[1], cap[2].into(), offset, &mut consumer)?;
                         continue;
                     };
                     let digit = cap[1][list_preamble_name.len()..].parse()?;
@@ -1661,7 +1669,9 @@ impl SpecParser {
     /// - `Prefix`
     /// - `DocDir`
     /// - `RemovePathPostfixes`
-    pub fn add_preamble(&mut self, name: &str, value: String, file: Arc<Path>, offset: usize) -> Result<()> {
+    #[tracing::instrument(skip(self, csm))]
+    pub fn add_preamble(&mut self, name: &str, value: String, offset: usize, csm: &mut Consumer<impl Read>) -> Result<()> {
+        tracing::debug!("Adding preamble");
         let rpm = &mut self.rpm;
 
         macro_rules! opt {
@@ -1674,7 +1684,7 @@ impl SpecParser {
 						);
 						self.errors.push(Err::Duplicate(0, stringify!($x).into())); // FIXME: what's the line number?
 					}
-					let m = MacroType::Runtime { s: Arc::new(RwLock::new(value.clone())), file, offset, param: false, len: value.len() };
+					let m = MacroType::Runtime { s: csm.s.clone(), file: csm.file.clone(), offset, param: false, len: value.len() };
 					if let Some(v) = self.macros.get_mut(stringify!($y)) {
 						v.push(m);
 					} else {
@@ -2204,7 +2214,7 @@ mod tests {
 
     #[test]
     fn parse_spec() -> Result<()> {
-        tracing_subscriber::FmtSubscriber::builder().pretty().with_max_level(tracing::Level::TRACE).init();
+        // tracing_subscriber::FmtSubscriber::builder().pretty().with_max_level(tracing::Level::TRACE).init();
         let f = File::open("./tests/test.spec")?;
         let f = BufReader::new(Box::new(f));
 
