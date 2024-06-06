@@ -71,23 +71,17 @@ macro_rules! __internal_macros {
 // https://github.com/rust-lang/rustfmt/issues/5866
 __internal_macros!(
     macro define(p, _, r) {
-        while let Some(ch) = r.next() {
-            if !ch.is_whitespace() {
-                r.back();
-                break;
-            }
-        }
+        r.until(|ch| !ch.is_whitespace());
         let pos = r.pos;
-        let def = r.read_til_eol().ok_or_else(|| eyre!("%define: read_til_eol() failed"))?;
+        let def = r.read_til_eot()?.to_string();
         let def = def.trim_start();
         #[rustfmt::skip]
-                let Some((name, def)) = def.split_once(' ') else {
-                    return Err(eyre!("%define: Expected 2 arguments").into());
+        let Some((name, _)) = def.split_once(' ') else {
+            return Err(eyre!("%define: Expected 2 arguments").into());
         };
-        let def = def.trim();
         let (name, param): (String, bool) = name.strip_suffix("()").map_or_else(|| (name.into(), false), |x| (x.into(), true));
         let csm = r.range(pos + 1 + name.len()..r.pos).ok_or_else(|| eyre!("%define: cannot unwind Consumer"))?;
-        p.define_macro(name, &csm, param, def.len());
+        p.define_macro(name, &csm, param, csm.end - csm.pos);
         Ok(())
     }
     macro global(p, o, r) {
@@ -111,7 +105,7 @@ __internal_macros!(
         // It will skip `Arc::try_unwrap()` inside `_rp_macro()` anyway since `new_reader.r` is
         // `None`. This should be safe.
 
-        let new_reader = r.range(r.pos..r.end).ok_or_else(|| eyre!("Cannot wind Consumer in %expand"))?;
+        let new_reader = r.range(r.pos..r.end).expect("Cannot wind Consumer in %expand");
 
         // SAFETY:
         // This is a valid downcast because `new_reader.r` is `None` given

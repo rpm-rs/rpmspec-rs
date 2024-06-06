@@ -1,4 +1,5 @@
 //! Utilities used in `rpmspec`.
+use color_eyre::eyre::eyre;
 use parking_lot::RwLock;
 use smartstring::alias::String;
 use std::{
@@ -69,6 +70,32 @@ macro_rules! gen_read_helper {
     };
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Brace {
+    Curly,
+    Square,
+    Round,
+}
+
+impl Brace {
+    pub fn open_ch(ch: char) -> Option<Self> {
+        Some(match ch {
+            '{' => Self::Curly,
+            '[' => Self::Square,
+            '(' => Self::Round,
+            _ => return None,
+        })
+    }
+    pub fn close_ch(ch: char) -> Option<Self> {
+        Some(match ch {
+            '}' => Self::Curly,
+            ']' => Self::Square,
+            ')' => Self::Round,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Consumer<R: Read + ?Sized> {
     pub s: Arc<RwLock<String>>,
@@ -97,6 +124,25 @@ impl<R: Read + ?Sized> Consumer<R> {
         self.pos = cur;
         Some(Self { s: Arc::clone(&self.s), r: None, file: Arc::clone(&self.file), pos: r.start, end: r.end })
     }
+    #[must_use]
+    pub fn range_string(&mut self, r: std::ops::Range<usize>) -> Option<String> {
+        let cur = self.pos;
+        self.pos = r.start;
+        let mut ret = String::new();
+        while self.pos != r.end {
+            let Some(ch) = self.next() else {
+                // unexpected EOF
+                return None;
+            };
+            ret.push(ch);
+        }
+        self.pos = cur;
+        Some(ret)
+    }
+    #[must_use]
+    pub fn must_range_str(&self, r: std::ops::Range<usize>) -> parking_lot::MappedRwLockReadGuard<str> {
+        parking_lot::RwLockReadGuard::map(self.s.read(), |s| s.get(r.start..r.end).unwrap())
+    }
     #[inline]
     pub fn back(&mut self) {
         self.pos -= 1;
@@ -109,6 +155,13 @@ impl<R: Read + ?Sized> Consumer<R> {
             }
         }
     }
+    pub fn after(&mut self, f: impl Fn(char) -> bool) {
+        while let Some(ch) = self.next() {
+            if f(ch) {
+                return;
+            }
+        }
+    }
     pub fn peek(&mut self) -> Option<char> {
         let out = self.next();
         self.back();
@@ -117,9 +170,144 @@ impl<R: Read + ?Sized> Consumer<R> {
     pub fn is_eof(&mut self) -> bool {
         self.peek().is_none()
     }
+    /// Skip through everything until the consumer reaches a reasonable spot:
+    /// - assume it starts with no quotes
+    /// - the line ends
+    /// - it's not inside quotes anymore
+    ///
+    /// "skip until end of…thing?"
+    pub fn skip_til_eot(&mut self) -> color_eyre::Result<()> {
+        let mut ps = vec![];
+        let mut backslash = false;
+        let mut line_start = true;
+        'main: while let Some(ch) = self.next() {
+            if ch == '\\' {
+                backslash = !backslash;
+                continue;
+            }
+            if ch == '\n' {
+                line_start = true;
+                if backslash {
+                    backslash = false;
+                    continue;
+                }
+                if ps.is_empty() {
+                    break;
+                }
+                continue;
+            }
+            if ch.is_whitespace() {
+                // make backslash unchanged
+                continue;
+            }
+            if backslash {
+                // ignore current char because it's escaped
+                backslash = false;
+                continue;
+            }
+            if line_start && ch == '#' {
+                // skip comment
+                // we'll say this assumption holds if there is only
+                // whitespace before the hashtag for this line
+                self.until(|ch| ch == '\n');
+                continue;
+            }
+            if line_start && ch == '-' && self.peek() == Some('-') {
+                self.next().unwrap();
+                if Some(' ') == self.peek() {
+                    // assume this is a lua comment…?
+                    // we'll say this assumption holds if there is only
+                    // whitespace before `-- ` for this line
+                    // FIXME: should do the parsing in a better way? This is a horrible assumption!
+                    self.until(|ch| ch == '\n');
+                    continue;
+                }
+            }
+            line_start = false;
+            if let Some(brace) = Brace::open_ch(ch) {
+                ps.push(brace);
+                continue;
+            }
+            if ['"', '\''].contains(&ch) {
+                let quote = ch;
+                // loop until found matching quote
+                while let Some(ch) = self.next() {
+                    if ch == '\\' {
+                        self.next();
+                        continue;
+                    }
+                    if ch == quote {
+                        continue 'main;
+                    }
+                }
+                return Err(eyre!("EOF while in {quote}string{quote}"));
+            }
+            if let Some(close) = Brace::close_ch(ch) {
+                let Some(open) = ps.pop() else {
+                    return Err(eyre!("Unexpected closing brace `{ch}`"));
+                };
+                if open != close {
+                    return Err(eyre!("Expected closing {open:?}, found `{ch}`"));
+                }
+                continue;
+            }
+        }
+        Ok(())
+    }
+    pub fn read_til_eot(&mut self) -> color_eyre::Result<parking_lot::MappedRwLockReadGuard<str>> {
+        let start = self.pos;
+        self.skip_til_eot()?;
+        Ok(self.must_range_str(start..self.pos))
+    }
+    pub fn skip_til_endbrace(&mut self, brace: Brace) -> color_eyre::Result<()> {
+        let mut ps = vec![];
+        let mut backslash = false;
+        'main: while let Some(ch) = self.next() {
+            if ch == '\\' {
+                backslash = !backslash;
+                continue;
+            }
+            if backslash {
+                // ignore current char because it's escaped
+                backslash = false;
+                continue;
+            }
+            if let Some(brace) = Brace::open_ch(ch) {
+                ps.push(brace);
+                continue;
+            }
+            if ['"', '\''].contains(&ch) {
+                let quote = ch;
+                // loop until found matching quote
+                while let Some(ch) = self.next() {
+                    if ch == '\\' {
+                        self.next();
+                        continue;
+                    }
+                    if ch == quote {
+                        continue 'main;
+                    }
+                }
+                return Err(eyre!("EOF while in {quote}string{quote}"));
+            }
+            if let Some(close) = Brace::close_ch(ch) {
+                let Some(open) = ps.pop() else {
+                    if close == brace {
+                        return Ok(());
+                    }
+                    return Err(eyre!("Unexpected closing brace `{ch}`"));
+                };
+                if open != close {
+                    return Err(eyre!("Expected closing {open:?}, found `{ch}`"));
+                }
+                continue;
+            }
+        }
+        Err(eyre!("Unexpected EOF"))
+    }
     // TODO: Result<> instead
     pub fn read_til_eol(&mut self) -> Option<String> {
-        let mut ps = vec![];
+        let mut ps = String::new();
         let mut out = String::new();
         macro_rules! close {
             ($ch:ident ~ $begin:expr, $end:expr) => {
@@ -146,7 +334,11 @@ impl<R: Read + ?Sized> Consumer<R> {
             }
             if ch == '\n' {
                 out.push('\n');
-                break;
+                if ps.is_empty() {
+                    break;
+                } else {
+                    continue;
+                }
             }
             if "([{".contains(ch) {
                 ps.push(ch);
@@ -197,14 +389,14 @@ impl<R: ?Sized + Read> Iterator for Consumer<R> {
         if self.end != 0 && self.pos >= self.end {
             return None;
         }
-        if let Some(c) = self.s.read().chars().nth(self.pos) {
-            self.pos += 1;
+        if let Some(c) = self.s.read().get(self.pos..).and_then(|substr| substr.chars().next()) {
+            self.pos += c.len_utf8();
             return Some(c);
         }
         let mut s = self.s.write();
         // we reacquire a lock and check if we still can't access it
-        if let Some(c) = s.chars().nth(self.pos) {
-            self.pos += 1;
+        if let Some(c) = s.get(self.pos..).and_then(|substr| substr.chars().next()) {
+            self.pos += c.len_utf8();
             return Some(c);
         }
         let mut buf = [0; 1024];
@@ -214,9 +406,9 @@ impl<R: ?Sized + Read> Iterator for Consumer<R> {
             return None; // EOF
         }
         s.push_str(core::str::from_utf8(&buf[..nbyte]).map_err(|e| color_eyre::eyre::eyre!("cannot parse buffer `{buf:?}`: {e}")).ok()?);
-        let Some(c) = s.chars().nth(self.pos) else { panic!("Consumer has no `s[{}]` after reading from `r`, where `s` is: {s}", self.pos) };
+        let Some(c) = s.get(self.pos..).and_then(|substr| substr.chars().next()) else { panic!("Consumer has no `s[{}]` after reading from `r`, where `s` is: {s}", self.pos) };
         drop(s);
-        self.pos += 1;
+        self.pos += c.len_utf8();
         Some(c)
     }
 }
