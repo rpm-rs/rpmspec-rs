@@ -1531,7 +1531,7 @@ impl SpecParser {
             let older_pos = old_pos;
             old_pos = consumer.pos;
             let rawline = rawline.trim();
-            warn!("{rawline}");
+            tracing::trace!(?rawline, "Parsing line");
             if self._handle_section(&rawline, &mut consumer, older_pos)? {
                 continue;
             }
@@ -1541,7 +1541,7 @@ impl SpecParser {
             if line.is_empty() || line.starts_with('#') || RE_DNL.is_match(line) {
                 continue;
             }
-            debug!(section=?self.section, "Handling section");
+            tracing::trace!(section=?self.section, ?line, "Handling section");
             match self.section {
                 RPMSection::Global | RPMSection::Package(_) => {
                     // Check for Requires special preamble syntax first
@@ -1637,7 +1637,7 @@ impl SpecParser {
         macro_rules! no_override_ins {
             ($attr:ident) => {{
                 if let Some(old) = rpm.$attr.insert(digit, value.into()) {
-                    error!("Overriding preamble `{name}{digit}` value `{old}` -> `{value}`");
+                    warn!("Overriding preamble `{name}{digit}` value `{old}` -> `{value}`");
                 }
             }};
         }
@@ -1851,6 +1851,7 @@ impl SpecParser {
             res.push_str(&args.join(" ")); // %*
         }
     }
+    #[tracing::instrument(skip(self, def))]
     fn __paramm_inner(&mut self, def: &mut Consumer<impl Read>, raw_args: &str, flags: &[char], quotes: &mut String, res: &mut String) -> Result<()> {
         let req_ql = quotes.len() - 1;
         let mut content = String::new();
@@ -1863,6 +1864,7 @@ impl SpecParser {
             content.push(ch);
         }
         if req_ql != quotes.len() {
+            tracing::error!(req_ql, new=quotes.len(), ?content, "Expected orig. no. quotes (req_ql) == new (quotes.len()) after parsing");
             return Err(eyre!("Unexpected EOF while parsing `%{{...`"));
         }
         #[allow(clippy::option_if_let_else)] // WARN refactor fail count: 2
@@ -2094,7 +2096,6 @@ impl SpecParser {
         let (mut content, mut quotes) = (String::new(), String::new());
         gen_read_helper!(chars quotes);
         while let Some(ch) = chars.next() {
-            error!("{content} | {ch}");
             match textproc::flag(&mut question, &mut notflag, &mut first, ch) {
                 Some(true) => continue,
                 Some(false) => {},
@@ -2214,7 +2215,7 @@ mod tests {
 
     #[test]
     fn parse_spec() -> Result<()> {
-        // tracing_subscriber::FmtSubscriber::builder().pretty().with_max_level(tracing::Level::TRACE).init();
+        tracing_subscriber::FmtSubscriber::builder().pretty().with_max_level(tracing::Level::TRACE).init();
         let f = File::open("./tests/test.spec")?;
         let f = BufReader::new(Box::new(f));
 
