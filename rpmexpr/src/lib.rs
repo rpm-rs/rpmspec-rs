@@ -202,7 +202,8 @@ impl Expr {
                 .clone()
                 .then(cmpop!("!=", Expr::Ne; "==", Expr::Eq; '<', Expr::Lt; '>', Expr::Gt; "<=", Expr::Le; ">=", Expr::Ge).then(addsub).repeated())
                 .foldl(|l, (op, r)| op(Box::new(l), Box::new(r)));
-            cmp.clone().then(cmpop!("&&", Expr::And; "||", Expr::Or).then(cmp).repeated()).foldl(|l, (op, r)| op(Box::new(l), Box::new(r)))
+            let expr = cmp.clone().then(cmpop!("&&", Expr::And; "||", Expr::Or).then(cmp).repeated()).foldl(|l, (op, r)| op(Box::new(l), Box::new(r)));
+            expr.clone().or(expr.clone().then_ignore(op('?')).then(expr.clone()).then_ignore(op(':')).then(expr).map(|((cond, then), other)| Expr::Ter(Box::new(cond), Box::new(then), Box::new(other))))
         })
         .then_ignore(end())
     }
