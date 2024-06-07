@@ -3,9 +3,8 @@
 //! RPM expressions are expressions used in spec files with the `%[]` notation,
 //! composed of different operators and 3 data types: strings, integers and RPM versions.
 use chumsky::prelude::*;
-use color_eyre::eyre::eyre;
 use rpmspec_common::expr::{Expression, Version};
-use rpmspec_common::{ExprErr as Err, PErr as PE};
+use rpmspec_common::ExprErr as Err;
 use smartstring::alias::String;
 use std::str::FromStr;
 
@@ -15,9 +14,6 @@ use std::str::FromStr;
 pub enum Expr {
     /// Literals
     Out(Expression),
-
-    /// Represents an RPM macro
-    Macro(String),
 
     /// `-...`
     Neg(Box<Expr>),
@@ -56,27 +52,27 @@ pub enum Expr {
 
 #[rustfmt::skip]
 macro_rules! gen_chk {
-    ($dollar:tt, $sp:ident) => {
+    ($dollar:tt) => {
         macro_rules! typed_chk {
             ($a:ident:$l:ident $b:ident:$r:ident => $e:expr) => {{
-                let $a = $a.eval($sp)?;
+                let $a = $a.eval()?;
                 Ok(match $a {
                     Expression::Ver($l) => {
-                        let $b = $b.eval($sp)?;
+                        let $b = $b.eval()?;
                         let Expression::Ver($r) = $b else {
                             return Err(Err::TypeMismatch(Box::new(Expression::Ver($l)), Box::new($b)));
                         };
                         Expression::Num(i64::from($e))
                     },
                     Expression::Num($l) => {
-                        let $b = $b.eval($sp)?;
+                        let $b = $b.eval()?;
                         let Expression::Num($r) = $b else {
                             return Err(Err::TypeMismatch(Box::new($a), Box::new($b)));
                         };
                         Expression::Num(i64::from($e))
                     },
                     Expression::Text($l) => {
-                        let $b = $b.eval($sp)?;
+                        let $b = $b.eval()?;
                         let Expression::Text($r) = $b else {
                             return Err(Err::TypeMismatch(Box::new(Expression::Text($l)), Box::new($b)));
                         };
@@ -87,8 +83,8 @@ macro_rules! gen_chk {
         }
         macro_rules! eval_type_chk {
             ($a:ident, $b:ident) => {
-                let $a = $a.eval($sp)?;
-                let $b = $b.eval($sp)?;
+                let $a = $a.eval()?;
+                let $b = $b.eval()?;
                 match $a {
                     Expression::Num(_) => {
                         let Expression::Num(_) = $b else {
@@ -179,15 +175,6 @@ impl Expr {
 
             let atom = atom.or(string).or(ver);
 
-            let macros = just('%')
-                .ignore_then(
-                    text::ident().or(text::ident().delimited_by(just('{'), just('}'))).or(text::ident().delimited_by(just('['), just(']'))).or(text::ident().delimited_by(just('('), just(')'))),
-                )
-                .map(String::from)
-                .map(Expr::Macro as fn(_) -> _);
-
-            let atom = atom.or(macros);
-
             let unary = op('-').repeated().then(atom.clone()).foldr(|_, r| Self::Neg(Box::new(r))).or(op('!').repeated().then(atom).foldr(|_, r| Self::Not(Box::new(r))));
             let muldiv = unary.clone().then(op('*').to(Expr::Mul as fn(_, _) -> _).or(op('/').to(Expr::Div as fn(_, _) -> _)).then(unary).repeated()).foldl(|l, (op, r)| op(Box::new(l), Box::new(r)));
             let addsub =
@@ -228,24 +215,16 @@ impl Expr {
     /// # Errors
     /// Invalid expression
     #[allow(clippy::cognitive_complexity)] // weird to split it apart
-    pub fn eval(self, sp: &mut impl FnMut(&mut String, String) -> Result<(), PE>) -> Result<Expression, Err> {
-        gen_chk!($, sp);
+    pub fn eval(self) -> Result<Expression, Err> {
+        gen_chk!($);
         match self {
             Self::Out(expr) => Ok(expr),
-            Self::Macro(m) => {
-                let mut out = String::new();
-                sp(&mut out, m)?;
-                match Self::parser().parse(&*out)? {
-                    Self::Out(x) => Ok(x),
-                    _ => Err(eyre!("Bad Expression: `{out}`").into()),
-                }
-            },
             Self::Neg(num) => {
-                let num = num.eval(sp)?;
+                let num = num.eval()?;
                 give!(Num(n) = num else NotNum: num);
                 Ok(Expression::Num(-n))
             },
-            Self::Not(num) => Ok(Expression::Num(match num.eval(sp)? {
+            Self::Not(num) => Ok(Expression::Num(match num.eval()? {
                 Expression::Ver(_) => 1,
                 Expression::Num(n) => i64::from(n == 0),
                 Expression::Text(s) => i64::from(s.is_empty()),
@@ -308,7 +287,7 @@ impl Expr {
                 give!(Text(r) = b);
                 Ok(Expression::Text(format!("{l}{r}").into()))
             },
-            Self::Sub(a, b) => Self::Add(a, Box::new(Self::Neg(b))).eval(sp),
+            Self::Sub(a, b) => Self::Add(a, Box::new(Self::Neg(b))).eval(),
             Self::Div(a, b) => {
                 eval_type_chk!(a, b);
                 give!(Num(l) = a else NoMulDiv: a);
@@ -322,7 +301,7 @@ impl Expr {
                 Ok(Expression::Num(l * r))
             },
             Self::Ter(cond, yes, no) => {
-                let cond = match cond.eval(sp)? {
+                let cond = match cond.eval()? {
                     Expression::Num(n) => n != 0,
                     Expression::Text(s) => !s.is_empty(),
                     Expression::Ver(_) => false,

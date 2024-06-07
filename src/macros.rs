@@ -199,12 +199,6 @@ __internal_macros!(
         Ok(())
     }
     macro shrink(_, o, r) {
-        for ch in r.by_ref() {
-            if !ch.is_whitespace() {
-                o.push(ch);
-                break;
-            }
-        }
         let mut space = false;
         for ch in r {
             if ch.is_whitespace() {

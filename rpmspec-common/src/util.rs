@@ -25,6 +25,7 @@ macro_rules! gen_read_helper {
         macro_rules! exit_chk {
             () => {
                 if !$quotes.is_empty() {
+                    tracing::error!("");
                     return Err(eyre!("Unclosed quotes: `{}`", $quotes).into());
                 }
             };
@@ -432,13 +433,25 @@ pub mod textproc {
             } else {
                 quotes.push('\'');
             }
-        } else if ch == '"' {
+            return Ok(());
+        }
+        if ch == '"' {
             if quotes.ends_with('"') {
                 quotes.pop();
             } else {
                 quotes.push('"');
             }
-        } else if "([{".contains(ch) {
+            return Ok(());
+        }
+        let x = quotes.pop();
+        if let Some('\'' | '"') = x {
+            quotes.push(x.unwrap());
+            return Ok(());
+        }
+        if let Some(x) = x {
+            quotes.push(x);
+        }
+        if "([{".contains(ch) {
             quotes.push(ch);
         } else if ")]}".contains(ch) {
             match quotes.pop().ok_or_else(|| eyre!("Found `{ch}` but there are no quotes to close"))? {

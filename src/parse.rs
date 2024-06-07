@@ -1180,13 +1180,56 @@ impl SpecParser {
     pub fn parse_expr(&mut self, out: &mut String, reader: &mut Consumer<impl Read>) -> Result<(), Err> {
         use chumsky::Parser;
 
+        // FIXME: it is not an exact replica of rpm: they do not parse the macros in the expression
+        // it's a bit different than that, but I think for now it'd be fine to do so instead of
+        // wasting time on a much difficult implementation
+        let mut inner = String::new();
+        self.parse_macro(&mut inner, reader)?;
+        trace!(?inner, "Before dealing with zeros");
+
+        // FIXME: somehow rpmexpr accepts `00` and `01` as valid integers for whatever reason
+        // too lazy to fix our own parser directly because that rpmexpr crate takes 45 seconds to
+        // compile on my machine *every* *single* *time*. I'M SORRY!!!
+        // To mitigate that, we're compressing zeros into just one zero character (or none) right here:
+        let mut expr = String::new();
+        let mut zeronum = false;
+        let mut num = false;
+        for ch in inner.chars() {
+            if num && !zeronum {
+                expr.push(ch);
+                if !ch.is_numeric() {
+                    num = false;
+                }
+                continue;
+            }
+            if num {
+                // zeronum
+                if ch == '0' {
+                    continue;
+                }
+                zeronum = false;
+                if !ch.is_numeric() {
+                    num = false;
+                    expr.push('0');
+                }
+                expr.push(ch);
+                continue;
+            }
+            num = ch.is_numeric();
+            zeronum = ch == '0';
+            if zeronum {
+                continue;
+            }
+            expr.push(ch);
+        }
+        if zeronum {
+            expr.push('0');
+        }
+
+        debug!(?expr, "Parsing RPM Expression");
         let parser = rpmexpr::Expr::parser();
-        let expr = parser.parse(&*reader.collect::<String>())?;
-        out.push_str(
-            &expr
-                .eval(&mut |out, m| self._start_parse_raw_macro::<std::fs::File>(out, &mut Consumer::new(Arc::new(parking_lot::RwLock::new(m)), None, Arc::from(std::path::Path::new("<expr>")))))?
-                .to_string(),
-        );
+        let expr = parser.parse(&*expr)?;
+        out.push_str(&expr.eval()?.to_string());
         Ok(())
     }
 
@@ -1656,7 +1699,10 @@ impl SpecParser {
             println!("{:#?}", self.errors);
             return take(&mut self.errors).into_iter().fold(Err(eyre!("Cannot parse spec file")), color_eyre::Help::error);
         }
-        self.rpm.changelog.parse()?;
+        // NOTE: we are leaving changelog parsing for probably users of this lib
+        // it's just markdown… and it doesn't really have to be markdown…
+
+        // self.rpm.changelog.parse()?;
         self.rpm.files.parse()?;
         self.rpm.packages.values_mut().try_for_each(|p| p.files.parse())?;
         Ok(())
@@ -2409,5 +2455,8 @@ mod tests {
         p.macros.insert("hai".into(), vec![MacroType::Runtime { s: Arc::new(RwLock::new("0".into())), file: Arc::from(Path::new("<?>")), offset: 0, param: true, len: 1 }]);
         p.parse_macro::<RR>(out, &mut "%[1 + 2 * (3+4) - %hai]".into()).unwrap();
         assert_eq!(out, "15");
+        out.clear();
+        p.parse_macro::<RR>(out, &mut "%[%hai + 1 ? 42 : 111]".into()).unwrap();
+        assert_eq!(out, "42");
     }
 }
