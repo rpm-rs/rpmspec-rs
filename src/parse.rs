@@ -26,7 +26,7 @@ lazy_static::lazy_static! {
     static ref RE_REQ:	Regex = Regex::new(r"(?m)^Requires(?:\(([\w,\s]+)\))?:\s*(.+)$").unwrap();
     static ref RE_FILE:	Regex = Regex::new(r"(?m)^(%\w+(\(.+\))?\s+)?(.+)$").unwrap();
     static ref RE_CLOG:	Regex = Regex::new(r"(?m)^\*[ \t]*((\w{3})[ \t]+(\w{3})[ \t]+(\d+)[ \t]+(\d+))[ \t]+(\S+)([ \t]+<([\w@.+]+)>)?([ \t]+-[ \t]+([\d.-^~_\w]+))?$((\n^[^*\n]*)+)").unwrap();
-    static ref RE_PMB:	Regex = Regex::new(r"(\w+):\s*(.+)").unwrap();
+    static ref RE_PMB:	Regex = Regex::new(r"(\w+\d*):\s*(.+)").unwrap();
     static ref RE_DNL:	Regex = Regex::new(r"%dnl\b").unwrap();
 }
 
@@ -1638,14 +1638,15 @@ impl SpecParser {
                         self.errors.push(Err::Others(eyre!("{}: Non-empty non-preamble line: {line}", 0))); // FIXME: what's the line number?
                         continue;
                     };
-                    // check for list_preambles
-                    let Some(list_preamble_name) = &cap[1].strip_suffix(char::is_numeric) else {
+                    if let Some(digitpos) = cap[1].find(['1', '2', '3', '4', '5', '6', '7', '8', '9', '0']) {
+                        let digit = cap[1][digitpos..].parse()?;
+                        self.add_list_preamble(&cap[1][..digitpos], digit, &cap[2])?;
+                    } else if ["Source", "Patch"].contains(&&cap[1]) {
+                        self.add_list_preamble(&cap[1], 0, &cap[2])?;
+                    } else {
                         let offset = consumer.pos - cap[2].len();
                         self.add_preamble(&cap[1], cap[2].into(), offset, &mut consumer)?;
-                        continue;
-                    };
-                    let digit = cap[1][list_preamble_name.len()..].parse()?;
-                    self.add_list_preamble(&list_preamble_name, digit, &cap[2])?;
+                    }
                 },
                 RPMSection::Description(ref mut p) => {
                     if p.is_empty() {
