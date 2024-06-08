@@ -791,6 +791,8 @@ pub struct RPMSpecPkg {
     pub name: Option<String>,
     /// Summary of subpackage (`Summary:`)
     pub summary: String,
+    /// License of subpackage (`License:`)
+    pub license: Option<String>,
     /// Dependencies of subpackage listed in `Requires:`
     pub requires: RPMRequires,
     /// Description of subpackage (`%description [-n] ...`)
@@ -1819,6 +1821,14 @@ impl SpecParser {
                         self.errors.push(Err::Duplicate(0, "Summary".into())); // FIXME: what's the line number?
                     }
                     rpm.summary = value;
+                    return Ok(());
+                },
+                "License" => {
+                    if let Some(license) = &rpm.license {
+                        warn!("overriding existing License preamble value `{license}` to `{value}`");
+                        self.errors.push(Err::Duplicate(0, "License".into()));
+                    }
+                    rpm.license = Some(value);
                     return Ok(());
                 },
                 "Provides" => return Package::add_query(&mut rpm.provides, &value),
