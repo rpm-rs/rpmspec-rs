@@ -1313,9 +1313,9 @@ impl SpecParser {
             }
             if ch == '%' {
                 let mut param = false;
-                let name_start = csm.pos;
+                let mut name = String::new();
+                csm.read_before(&mut name, |ch| ch == '(' || ch.is_whitespace());
                 csm.until(|ch| ch == '(' || ch.is_whitespace());
-                let name_end = csm.pos;
                 let Some(mut x) = csm.next() else {
                     return Err(eyre!("Unexpected EOF"));
                 };
@@ -1332,7 +1332,6 @@ impl SpecParser {
                 trace!(pos = csm.pos, "parsing macro definition");
                 csm.skip_til_eot()?; // eot is end of definition
                 trace!(pos = csm.pos, "finished parsing macro definition");
-                let name = csm.range_string(name_start..name_end).unwrap();
                 trace!(?name, "Insert macro");
                 let m = MacroType::Runtime { file: Arc::clone(&csm.file), s: Arc::clone(&csm.s), param, offset, len: csm.pos - offset };
                 if let Some(v) = self.macros.get_mut(&name) {
@@ -1910,13 +1909,7 @@ impl SpecParser {
                 }
                 let mut flag = String::new();
                 flag.push(ch);
-                while let Some(ch) = reader.next() {
-                    if "\\ \n".contains(ch) {
-                        reader.back();
-                        break;
-                    }
-                    flag.push(ch);
-                }
+                reader.read_before(&mut flag, |ch| ['\\', ' ', '\n'].contains(&ch));
                 flags.push(flag);
                 content.push('-');
                 content.push(ch);
@@ -1943,12 +1936,11 @@ impl SpecParser {
             }
             textproc::chk_ps(&mut quotes, ch)?;
             // compress whitespace to ' '
-            if ch.is_whitespace() && !space {
-                space = true;
-                content.push(' ');
-                continue;
-            }
             if ch.is_whitespace() {
+                if !space {
+                    space = true;
+                    content.push(' ');
+                }
                 continue;
             }
             content.push(ch);
@@ -1957,6 +1949,7 @@ impl SpecParser {
         exit!();
     }
 
+    #[inline]
     fn __paramm_percent_star(follow: char, res: &mut String, raw_args: &str, args: &[String], def: &mut Consumer<impl Read>) {
         if follow == '*' {
             res.push_str(raw_args); // %**
@@ -1965,6 +1958,7 @@ impl SpecParser {
             res.push_str(&args.join(" ")); // %*
         }
     }
+
     #[tracing::instrument(skip(self, def))]
     fn __paramm_inner(&mut self, def: &mut Consumer<impl Read>, raw_args: &str, flags: &[String], quotes: &mut String, res: &mut String) -> Result<()> {
         let req_ql = quotes.len() - 1;
@@ -2063,13 +2057,7 @@ impl SpecParser {
                     let mut macroname = String::new();
                     macroname.push(ch);
                     // no need chk_ps!(), must be numeric
-                    while let Some(ch) = def.next() {
-                        if !ch.is_numeric() {
-                            def.back();
-                            break;
-                        }
-                        macroname.push(ch);
-                    }
+                    def.read_before(&mut macroname, |ch| !ch.is_numeric());
                     out.push_str(
                         match macroname.parse::<usize>() {
                             Ok(n) => args.get(n - 1),
@@ -2242,24 +2230,17 @@ impl SpecParser {
                             return Ok(());
                         }
                         if ch == ':' {
-                            let mut slen = 0;
-                            for ch in chars.by_ref() {
-                                textproc::chk_ps(&mut quotes, ch)?;
-                                if !quotes.is_empty() {
-                                    slen += 1;
-                                    continue;
+                            let after_colon_pos = chars.pos;
+                            chars.skip_til_endbrace(rpmspec_common::util::Brace::Curly)?;
+                            let mut chars = chars.range(after_colon_pos..chars.pos - 1).expect("Cannot unwind consumer to `{*:...}`");
+                            if question {
+                                if self.macros.contains_key(&name) ^ notflag {
+                                    self.parse_macro(out, &mut chars)?;
                                 }
-                                let mut chars = chars.range(chars.pos - slen - 1..chars.pos - 1).expect("Cannot unwind consumer to `{*:...}`");
-                                if question {
-                                    if self.macros.contains_key(&name) ^ notflag {
-                                        self.parse_macro(out, &mut chars)?;
-                                    }
-                                    return Ok(());
-                                }
-                                self._macro_expand_flagproc(false, notflag, &mut chars, &name, out, true)?;
                                 return Ok(());
                             }
-                            return Err(eyre!("EOF but `%{{...:...` is not ended with `}}`").into());
+                            self._macro_expand_flagproc(false, notflag, &mut chars, &name, out, true)?;
+                            return Ok(());
                         }
                         match textproc::flag(&mut question, &mut notflag, &mut first, ch) {
                             Some(true) => continue,
@@ -2274,14 +2255,8 @@ impl SpecParser {
                         error!("flags (! and ?) are not supported for %[].");
                     }
                     let start = chars.pos;
-                    while let Some(ch) = chars.next() {
-                        textproc::chk_ps(&mut quotes, ch)?;
-                        if !quotes.is_empty() {
-                            continue;
-                        }
-                        return self.parse_expr(out, &mut chars.range(start..chars.pos - 1).expect("Cannot unwind consumer to `%[...]`"));
-                    }
-                    return Err(eyre!("EOF but `%[...` is not ended with `]`").into());
+                    chars.skip_til_endbrace(rpmspec_common::util::Brace::Square)?;
+                    return self.parse_expr(out, &mut chars.range(start..chars.pos - 1).expect("Cannot unwind consumer to `%[...]`"));
                 },
                 '(' => {
                     if notflag || question {
@@ -2329,7 +2304,7 @@ mod tests {
 
     #[test]
     fn parse_spec() -> Result<()> {
-        tracing_subscriber::FmtSubscriber::builder().pretty().with_max_level(tracing::Level::TRACE).init();
+        // tracing_subscriber::FmtSubscriber::builder().pretty().with_max_level(tracing::Level::TRACE).init();
         let f = File::open("./tests/test.spec")?;
         let f = BufReader::new(Box::new(f));
 
@@ -2344,7 +2319,7 @@ mod tests {
 
     #[test]
     fn test_load_macros() -> Result<()> {
-        tracing_subscriber::FmtSubscriber::builder().pretty().with_max_level(tracing::Level::TRACE).init();
+        // tracing_subscriber::FmtSubscriber::builder().pretty().with_max_level(tracing::Level::TRACE).init();
         println!("{}", SpecParser::arch()?);
         let mut sp = SpecParser::new();
         sp.load_macros()?;
@@ -2467,7 +2442,7 @@ mod tests {
         p.parse_macro::<RR>(out, &mut "%[1 + 2 * (3+4) - %hai]".into()).unwrap();
         assert_eq!(out, "15");
         out.clear();
-        p.parse_macro::<RR>(out, &mut "%[%hai + 1 ? 42 : 111]".into()).unwrap();
+        p.parse_macro::<RR>(out, &mut "%[(%hai + 1) ? 42 : 111]".into()).unwrap();
         assert_eq!(out, "42");
     }
 }

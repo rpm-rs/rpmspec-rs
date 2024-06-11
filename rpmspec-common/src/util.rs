@@ -156,6 +156,25 @@ impl<R: Read + ?Sized> Consumer<R> {
             }
         }
     }
+    /// Read all characters until (and not including) the character that satisfy `f()`
+    pub fn read_before(&mut self, s: &mut String, f: impl Fn(char) -> bool) {
+        while let Some(ch) = self.next() {
+            if f(ch) {
+                self.back();
+                break;
+            }
+            s.push(ch);
+        }
+    }
+    /// Just like [`read_before()`], but includes the last character
+    pub fn read_until(&mut self, s: &mut String, f: impl Fn(char) -> bool) {
+        while let Some(ch) = self.next() {
+            s.push(ch);
+            if f(ch) {
+                break;
+            }
+        }
+    }
     pub fn after(&mut self, f: impl Fn(char) -> bool) {
         while let Some(ch) = self.next() {
             if f(ch) {
