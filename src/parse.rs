@@ -2438,7 +2438,7 @@ mod tests {
     fn expression() {
         let mut p = super::SpecParser::new();
         let out = &mut String::new();
-        p.macros.insert("hai".into(), vec![MacroType::Runtime { s: Arc::new(RwLock::new("0".into())), file: Arc::from(Path::new("<?>")), offset: 0, param: true, len: 1 }]);
+        p.macros.insert("hai".into(), vec![MacroType::Runtime { s: Arc::new(RwLock::new("0".into())), file: Arc::from(Path::new("<?>")), offset: 0, param: false, len: 1 }]);
         p.parse_macro::<RR>(out, &mut "%[1 + 2 * (3+4) - %hai]".into()).unwrap();
         assert_eq!(out, "15");
         out.clear();

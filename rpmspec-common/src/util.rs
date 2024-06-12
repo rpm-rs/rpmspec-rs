@@ -445,6 +445,7 @@ pub mod textproc {
     use smartstring::alias::String;
     use tracing::warn;
 
+    #[deprecated = "Incorrect impl; use Consumer.skip_til_endbrace() instead."]
     pub fn chk_ps(quotes: &mut String, ch: char) -> Result<()> {
         if ch == '\'' {
             if quotes.ends_with('\'') {
