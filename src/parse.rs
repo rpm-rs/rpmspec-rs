@@ -8,6 +8,7 @@ use parking_lot::RwLock;
 use regex::Regex;
 use rpmspec_common::{gen_read_helper, PErr as Err};
 use smartstring::alias::String;
+use std::env::consts::ARCH;
 use std::{
     collections::HashMap,
     io::{BufReader, Read},
@@ -1280,17 +1281,6 @@ impl SpecParser {
         Ok(true)
     }
 
-    /// Returns the architecture of the system using `uname -m`
-    ///
-    /// # Errors
-    /// - [`std::io::Error`] if command fails to execute
-    /// - [`std::io::Utf8Error`] if command output cannot be parsed
-    pub fn arch() -> Result<String> {
-        let binding = Command::new("uname").arg("-m").output()?;
-        let s = core::str::from_utf8(&binding.stdout)?;
-        Ok(s[..s.len() - 1].into()) // remove new line
-    }
-
     /// Loads all macros defined in a file.
     ///
     /// # Errors
@@ -1352,7 +1342,6 @@ impl SpecParser {
     /// # Errors
     /// - [`io::Error`] when `sh -c "rpm --showrc | grep '^Macro path' | sed 's/Macro path: //'"` fails to run
     /// - [`core::str::Utf8Error`] when the output of the above command cannot be parsed into `&str`
-    /// - [`io::Error`] and [`core::str::Utf8Error`] from `uname -m` ([`SpecParser::arch()`])
     /// - [`glob::PatternError`] if the macro paths from the `rpm` command output are invalid
     /// - [`io::Error`] when [`SpecParser::load_macro_from_file()`] fails to open/read the file
     /// - [`core::str::Utf8Error`] when the file content cannot be converted into `&str`
@@ -1369,7 +1358,7 @@ impl SpecParser {
 
         // TODO: use Consumer::read_til_EOL() instead
         for path in paths {
-            let path = path.replace("%{_target}", Self::arch()?.as_str());
+            let path = path.replace("%{_target}", ARCH);
             debug!(": {path}");
             for path in glob::glob(path.as_str())? {
                 let p = path?;
@@ -1401,9 +1390,6 @@ impl SpecParser {
     }
 
     /// Handles conditions as if they are sections, like `%if` and `%elifarch`, etc.
-    ///
-    /// # Errors
-    /// - [`std::io::Error`] or [`std::io::Utf8Error`] when cannot detect arch via [`SpecParser::arch()`]
     pub fn _handle_conditions(&mut self, start: &str, remain: &str) -> Result<bool> {
         // TODO: parse using RPM expressions
         match start {
@@ -1412,11 +1398,11 @@ impl SpecParser {
                 self.cond.push((c, c));
             },
             "ifarch" => {
-                let c = remain == Self::arch()?;
+                let c = remain == ARCH;
                 self.cond.push((c, c));
             },
             "ifnarch" => {
-                let c = remain != Self::arch()?;
+                let c = remain != ARCH;
                 self.cond.push((c, c));
             },
             "elifarch" => {
@@ -1426,7 +1412,7 @@ impl SpecParser {
                 if *b {
                     *a = false;
                 } else {
-                    *a = remain == Self::arch()?;
+                    *a = remain == ARCH;
                     *b = *a;
                 }
             },
@@ -1437,7 +1423,7 @@ impl SpecParser {
                 if *b {
                     *a = false;
                 } else {
-                    *a = remain != Self::arch()?;
+                    *a = remain != ARCH;
                     *b = *a;
                 }
             },
@@ -1473,7 +1459,7 @@ impl SpecParser {
     ///
     /// # Errors
     /// - Invalid syntax. See the error message. (of type [`color_eyre::Report`])
-    /// - Fail to get arch ([`Self::arch()`]) via `uname -m`
+    /// - Fail to get arch ([`ARCH`]) via `uname -m`
     ///
     /// # Panics
     /// - Cannot unwind Consumer (cannot read something that has been read)
@@ -1598,7 +1584,6 @@ impl SpecParser {
     /// # Errors
     /// - Cannot expand macros ([`Self::_expand_macro()`])
     /// - Bad section syntax ([`Self::_handle_section()`])
-    /// - Cannot detect arch ([`Self::arch()`])
     /// - Bad syntax in `Requires:` or other preambles
     /// - Other bad syntaxes
     ///
@@ -2320,7 +2305,6 @@ mod tests {
     #[test]
     fn test_load_macros() -> Result<()> {
         // tracing_subscriber::FmtSubscriber::builder().pretty().with_max_level(tracing::Level::TRACE).init();
-        println!("{}", SpecParser::arch()?);
         let mut sp = SpecParser::new();
         sp.load_macros()?;
         println!("{:#?}", sp.macros);
