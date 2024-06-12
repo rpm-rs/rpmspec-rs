@@ -143,7 +143,7 @@ impl Package {
                     return Err(eyre!("Unclosed quotes: `{quotes}`").note(format!("Reading query `{query}`")).note(lzf!("Parsing `{last}`")).note(lzf!("Deliminator `{ch}`")));
                 }
                 if !last.is_empty() {
-                    pkgs.push(Self::new(std::mem::take(&mut last)));
+                    pkgs.push(Self::new(take(&mut last)));
                 }
                 continue;
             }
@@ -311,6 +311,7 @@ pub struct RPMRequires {
 }
 
 impl RPMRequires {
+    /// Check if there are any Requires
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.none.is_empty()
@@ -1463,7 +1464,7 @@ impl SpecParser {
     ///
     /// # Panics
     /// - Cannot unwind Consumer (cannot read something that has been read)
-    pub fn _handle_section(&mut self, l: &mut String, consumer: &mut Consumer<impl Read>, oldpos: usize) -> Result<bool> {
+    pub fn _handle_section(&mut self, l: &mut String, consumer: &mut Consumer<impl Read>) -> Result<bool> {
         // FIXME: optimizations?
         let (start, _) = l.split_once(|ch: char| ch.is_whitespace()).unwrap_or((l.trim(), ""));
         if !(start.starts_with('%') && start.chars().nth(1) != Some('%')) {
@@ -1604,7 +1605,7 @@ impl SpecParser {
             let older_pos = old_pos;
             old_pos = consumer.pos;
             trace!(?rawline, "Parsing line");
-            if self._handle_section(&mut rawline, &mut consumer.range(older_pos..consumer.pos).expect("Cannot unwind Consumer"), older_pos)? {
+            if self._handle_section(&mut rawline, &mut consumer.range(older_pos..consumer.pos).expect("Cannot unwind Consumer"))? {
                 continue;
             }
             let mut line = String::new();
@@ -1888,7 +1889,7 @@ impl SpecParser {
             }
             if ch == '-' && space {
                 space = false;
-                let ch = next!(~'-');
+                let ch = next!(~);
                 if !ch.is_ascii_alphabetic() {
                     return Err(eyre!("Argument flag `-{ch}` in parameterized macro is not alphabetic"));
                 }
@@ -1945,21 +1946,9 @@ impl SpecParser {
     }
 
     #[tracing::instrument(skip(self, def))]
-    fn __paramm_inner(&mut self, def: &mut Consumer<impl Read>, raw_args: &str, flags: &[String], quotes: &mut String, res: &mut String) -> Result<()> {
-        let req_ql = quotes.len() - 1;
-        let mut content = String::new();
-        for ch in def.by_ref() {
-            // find `}`
-            textproc::chk_ps(quotes, ch)?;
-            if req_ql == quotes.len() {
-                break;
-            }
-            content.push(ch);
-        }
-        if req_ql != quotes.len() {
-            tracing::error!(req_ql, new = quotes.len(), ?content, "Expected orig. no. quotes (req_ql) == new (quotes.len()) after parsing");
-            return Err(eyre!("Unexpected EOF while parsing `%{{...`"));
-        }
+    fn __paramm_inner(&mut self, def: &mut Consumer<impl Read>, raw_args: &str, flags: &[String], res: &mut String) -> Result<()> {
+        let mut content = def.read_til_endbrace(rpmspec_common::util::Brace::Curly)?;
+
         #[allow(clippy::option_if_let_else)] // WARN refactor fail count: 2
         let notflag = if let Some(x) = content.strip_prefix('!') {
             content = x.into();
@@ -2012,52 +2001,39 @@ impl SpecParser {
     #[tracing::instrument(skip(self, def, reader))]
     fn _param_macro(&mut self, name: &str, def: &mut Consumer<impl Read>, reader: &mut Consumer<impl Read>, out: &mut String) -> Result<()> {
         let (raw_args, args, flags) = self._param_macro_args(reader)?;
-        let mut quotes = String::new();
-        gen_read_helper!(def quotes);
         macro_rules! exit {
             () => {
-                exit_chk!();
                 return Ok(());
             };
         }
+        gen_read_helper!(def dummy);
+
         while let Some(ch) = def.next() {
             if ch != '%' {
-                textproc::chk_ps(&mut quotes, ch)?;
                 out.push(ch);
                 continue;
             }
-            let ch = next!(~'%'); // will chk_ps after `%` chk
-            if ch == '%' {
-                out.push('%');
-                continue;
-            }
-            textproc::chk_ps(&mut quotes, ch)?;
             // ? https://rpm-software-management.github.io/rpm/manual/macros.html
-            match ch {
-                '*' => Self::__paramm_percent_star(next!(~'*'), out, &raw_args, &args, def),
+            match next!(~) {
+                '*' => Self::__paramm_percent_star(next!(~), out, &raw_args, &args, def),
                 '#' => out.push_str(&args.len().to_string()),
                 '0' => out.push_str(name),
-                '{' => self.__paramm_inner(def, &raw_args, &flags, &mut quotes, out)?,
-                _ if ch.is_numeric() => {
+                '{' => self.__paramm_inner(def, &raw_args, &flags, out)?,
+                '%' => out.push('%'),
+                ch if ch.is_numeric() => {
                     let mut macroname = String::new();
                     macroname.push(ch);
-                    // no need chk_ps!(), must be numeric
                     def.read_before(&mut macroname, |ch| !ch.is_numeric());
-                    out.push_str(
-                        match macroname.parse::<usize>() {
-                            Ok(n) => args.get(n - 1),
-                            Err(e) => return Err(eyre!("Cannot parse macro param `%{macroname}`: {e}")),
-                        }
-                        .unwrap_or(&String::new()),
-                    );
+                    out.push_str(args.get(macroname.parse::<usize>().expect("Cannot parse numeric macroname") - 1).map_or("", |s| &*s));
                 },
                 _ => {
                     def.back();
+                    // TODO: def.range()?
                     self._start_parse_raw_macro(out, def)?;
                 },
             }
         }
-        exit!();
+        Ok(())
     }
 
     pub(crate) fn _find_macro_and_expand<R: Read>(&mut self, name: &str, reader: &mut Consumer<R>, out: &mut String) -> Result<(), Err> {
@@ -2115,28 +2091,20 @@ impl SpecParser {
         }
     }
 
-    fn __rawm_shellexpand(strout: &mut String, chars: &mut Consumer<impl Read>, mut quotes: String) -> Result<()> {
-        let mut shellcmd = String::new();
-        for ch in chars.by_ref() {
-            textproc::chk_ps(&mut quotes, ch)?;
-            if !quotes.is_empty() {
-                shellcmd.push(ch);
-                continue;
-            }
-            return Err(match Command::new("sh").arg("-c").arg(&*shellcmd).output() {
-                Ok(out) if out.status.success() => {
-                    strout.push_str(core::str::from_utf8(&out.stdout)?.trim_end_matches('\n'));
-                    return Ok(());
-                },
-                Ok(out) => eyre!("Shell expansion command did not succeed")
-                    .note(out.status.code().map_or("No status code".into(), |c| format!("Status code: {c}")))
-                    .section(std::string::String::from_utf8(out.stdout)?.header("Stdout:"))
-                    .section(std::string::String::from_utf8(out.stderr)?.header("Stderr:")),
-                Err(e) => eyre!(e).wrap_err("Shell expansion failed"),
-            })
-            .note(shellcmd);
-        }
-        Err(eyre!("Unexpected end of shell expansion command: `%({shellcmd}`"))
+    fn __rawm_shellexpand(strout: &mut String, chars: &mut Consumer<impl Read>) -> Result<()> {
+        let shellcmd = chars.read_til_endbrace(rpmspec_common::util::Brace::Round)?;
+        Err(match Command::new("sh").arg("-c").arg(&*shellcmd).output() {
+            Ok(out) if out.status.success() => {
+                strout.push_str(core::str::from_utf8(&out.stdout)?.trim_end_matches('\n'));
+                return Ok(());
+            },
+            Ok(out) => eyre!("Shell expansion command did not succeed")
+                .note(out.status.code().map_or("No status code".into(), |c| format!("Status code: {c}")))
+                .section(std::string::String::from_utf8(out.stdout)?.header("Stdout:"))
+                .section(std::string::String::from_utf8(out.stderr)?.header("Stderr:")),
+            Err(e) => eyre!(e).wrap_err("Shell expansion failed"),
+        })
+        .note(shellcmd)
     }
 
     /// Expand macros depending on `notflag`.
@@ -2247,7 +2215,7 @@ impl SpecParser {
                     if notflag || question {
                         error!("flags (! and ?) are not supported for %().");
                     }
-                    Self::__rawm_shellexpand(out, chars, quotes)?;
+                    Self::__rawm_shellexpand(out, chars)?;
                     return Ok(());
                 },
                 '%' if first => {

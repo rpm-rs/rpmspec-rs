@@ -47,7 +47,7 @@ macro_rules! gen_read_helper {
                     exit!();
                 }
             };
-            (~$c:expr) => {
+            (~) => {
                 if let Some(ch) = $reader.next() {
                     ch
                 } else {
@@ -324,6 +324,11 @@ impl<R: Read + ?Sized> Consumer<R> {
             }
         }
         Err(eyre!("Unexpected EOF"))
+    }
+    pub fn read_til_endbrace(&mut self, brace: Brace) -> color_eyre::Result<String> {
+        let start = self.pos;
+        self.skip_til_endbrace(brace)?;
+        Ok(self.range_string(start..self.pos - 1).unwrap())
     }
     // TODO: Result<> instead
     pub fn read_til_eol(&mut self) -> Option<String> {
