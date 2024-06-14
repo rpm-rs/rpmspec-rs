@@ -791,161 +791,123 @@ pub enum RPMSection {
     Changelog,
 }
 
-/// Represents a subpackage (`%package ...`).
-#[derive(Default, Clone, Debug, PartialEq, Eq)]
-pub struct RPMSpecPkg {
-    /// Name of subpackage (`%package [-n] ...`)
-    ///
-    /// If `-n` is used, the argument following `-n` is the name.
-    /// Otherwise, the prefix `%{name}-` will be added.
-    pub name: Option<String>,
-    /// Summary of subpackage (`Summary:`)
-    pub summary: String,
-    /// License of subpackage (`License:`)
-    pub license: Option<String>,
-    /// Dependencies of subpackage listed in `Requires:`
-    pub requires: RPMRequires,
-    /// Description of subpackage (`%description [-n] ...`)
-    pub description: String,
-    /// Group of subpackage (`Group:`)
-    pub group: Option<String>,
-    /// What the subpackage `Provides:`
-    pub provides: Vec<Package>,
-    /// Represents `Conflicts:`
-    pub conflicts: Vec<Package>,
-    /// Represents `Obsoletes:`
-    pub obsoletes: Vec<Package>,
-    /// Represents `Recommends:`
-    pub recommends: Vec<Package>,
-    /// Represents `Suggests:`
-    pub suggests: Vec<Package>,
-    /// Represents `Supplements:`
-    pub supplements: Vec<Package>,
-    /// Represents `Enhances:`
-    pub enhances: Vec<Package>,
-    /// Files in subpackage listed in `%files [-n] ...`
-    pub files: RPMFiles,
-    /// Scriptlets present in the final RPM package, such as `%post [-n] ...` and `%pretrans [-n] ...`
-    pub scriptlets: Scriptlets, // todo
+type OptString = Option<String>;
+type Pkgs = Vec<Package>;
+type SimplePkgs = Vec<Package>;
+type Strings = Vec<String>;
 
-                                // todo: BuildArch and stuff
-}
+crate::preamble_maker! {
+    /// Represents a subpackage (`%package ...`).
+    #[derive(Default, Clone, Debug, PartialEq, Eq)]
+    RPMSpecPkg {
+        Group: OptString,
+        Summary: OptString,
+        License: OptString,
+        Provides: Pkgs,
+        Obsoletes: Pkgs,
+        Conflicts: Pkgs,
+        Suggests: SimplePkgs,
+        Recommends: SimplePkgs,
+        Enhances: SimplePkgs,
+        Supplements: SimplePkgs,
+        ;;
+        /// Name of subpackage (`%package [-n] ...`)
+        ///
+        /// If `-n` is used, the argument following `-n` is the name.
+        /// Otherwise, the prefix `%{name}-` will be added.
+        pub name: Option<String>,
+        /// Description of subpackage (`%description [-n] ...`)
+        pub description: String,
+        /// Files in subpackage listed in `%files [-n] ...`
+        pub files: RPMFiles,
+        /// Scriptlets present in the final RPM package, such as `%post [-n] ...` and `%pretrans [-n] ...`
+        pub scriptlets: Scriptlets,
+        // todo: BuildArch and stuff
 
-/// Represents the entire spec file.
-#[derive(Default, Clone, Debug, PartialEq, Eq)]
-pub struct RPMSpec {
-    /// List of subpackages (`%package ...`).
-    pub packages: HashMap<String, RPMSpecPkg>,
+        /// Represents `Requires:` and `Requires(...):`
+        pub requires: RPMRequires,
+    }
+    /// Represents the entire spec file.
+    #[derive(Default, Clone, Debug, PartialEq, Eq)]
+    RPMSpec {
+        Name: OptString,
+        Version: OptString,
+        Release: OptString,
+        Epoch: u32,
+        SourceLicense: OptString,
+        URL: OptString,
+        BugURL: OptString,
+        ModularityLabel: OptString,
+        DistTag: OptString,
+        VCS: OptString,
+        Distribution: OptString,
+        Copyright: OptString,
+        Vendor: OptString,
+        Packager: OptString,
+        AutoReqProv: bool,
+        AutoReq: bool,
+        AutoProv: bool,
+        ExcludeArch: Strings,
+        ExclusiveArch: Strings,
+        ExcludeOS: Strings,
+        ExclusiveOS: Strings,
+        BuildArch: Strings,
+        BuildArchitectures: Strings,
+        BuildRequires: Pkgs,
+        //
+        Group: OptString,
+        Summary: OptString,
+        License: OptString,
+        Provides: Pkgs,
+        Obsoletes: Pkgs,
+        Conflicts: Pkgs,
+        Suggests: SimplePkgs,
+        Recommends: SimplePkgs,
+        Enhances: SimplePkgs,
+        Supplements: SimplePkgs,
+        // /// Represents `OrderWithRequires:`
+        // pub orderwithrequires: Pkgs,
+        // /// Represents `BuildConflicts:`
+        // pub buildconflicts: Pkgs,
+        // /// Represents `Prefix:`, `Prefixes:`
+        // pub prefix: OptString,
+        // /// Represents `Docdir:`
+        // pub docdir: OptString,
+        // /// Represents `RemovePathPostFixes:`
+        // pub removepathpostfixes: Strings,
+        ;;
+        /// List of subpackages (`%package ...`).
+        pub packages: HashMap<String, RPMSpecPkg>,
 
-    /// Represents `%description`
-    pub description: String,
-    /// Represents `%prep`
-    pub prep: String,
-    /// Represents `%generate_buildrequires`
-    pub generate_buildrequires: Option<String>,
-    /// Represents `%conf`
-    pub conf: Option<String>,
-    /// Represents `%build`
-    pub build: String,
-    /// Represents `%install`
-    pub install: String,
-    /// Represents `%check`
-    pub check: String,
+        /// Represents `%description`
+        pub description: String,
+        /// Represents `%prep`
+        pub prep: String,
+        /// Represents `%generate_buildrequires`
+        pub generate_buildrequires: Option<String>,
+        /// Represents `%conf`
+        pub conf: Option<String>,
+        /// Represents `%build`
+        pub build: String,
+        /// Represents `%install`
+        pub install: String,
+        /// Represents `%check`
+        pub check: String,
 
-    /// Scriptlets present in the final RPM package, such as `%post` and `%pretrans`
-    pub scriptlets: Scriptlets,
-    /// Files present in the final RPM package listed in `%files [-f ...]`
-    pub files: RPMFiles,
-    /// Represents `%changelog`
-    pub changelog: Changelogs,
+        /// Scriptlets present in the final RPM package, such as `%post` and `%pretrans`
+        pub scriptlets: Scriptlets,
+        /// Files present in the final RPM package listed in `%files [-f ...]`
+        pub files: RPMFiles,
+        /// Represents `%changelog`
+        pub changelog: Changelogs,
 
-    /// Represents `Name:`;
-    /// The base name of the package, which should match the SPEC filename.
-    pub name: Option<String>,
-    /// Represents `Version:`;
-    /// This usually is the upstream version number of the software.
-    pub version: Option<String>,
-    /// Represents `Release:`
-    pub release: Option<String>,
-    /// Represents `Epoch:`
-    pub epoch: u32,
-    /// Repreesnts `License:`
-    pub license: Option<String>,
-    /// Repreesnts `SourceLicense:`
-    pub sourcelicense: Option<String>,
-    /// Repreesnts `Group:`
-    pub group: Option<String>,
-    /// Repreesnts `Summary:`
-    pub summary: Option<String>,
-    /// Repreesnts `Source0:`, `Source1:`, ...
-    pub sources: HashMap<u32, String>,
-    /// Repreesnts `Patch0:`, `Patch1:`, ...
-    pub patches: HashMap<u32, String>,
-    /// Represents `Copyright:`
-    pub copyright: Option<String>,
-    // TODO: icon
-    // TODO: nosource nopatch
-    /// Represents `URL:`
-    pub url: Option<String>,
-    /// Represents `BugURL:`
-    pub bugurl: Option<String>,
-    /// Represents `ModularityLabel:`
-    pub modularitylabel: Option<String>,
-    /// Represents `DistTag:`
-    pub disttag: Option<String>,
-    /// Represents `VCS:`
-    pub vcs: Option<String>,
-    /// Represents `Distribution:`
-    pub distribution: Option<String>,
-    /// Represents `Vendor:`
-    pub vendor: Option<String>,
-    /// Represents `Packager:`
-    pub packager: Option<String>,
-    // TODO: buildroot
-    /// Represents `AutoReqProv:`
-    pub autoreqprov: bool,
-    /// Represents `AutoReq:`
-    pub autoreq: bool,
-    /// Represents `AutoProv:`
-    pub autoprov: bool,
-    /// Represents `Requires:` and `Requires(...):`
-    pub requires: RPMRequires,
-    /// Represents `Provides:`
-    pub provides: Vec<Package>,
-    /// Represents `Conflicts:`
-    pub conflicts: Vec<Package>,
-    /// Represents `Obsoletes:`
-    pub obsoletes: Vec<Package>,
-    /// Represents `Recommends:`
-    pub recommends: Vec<Package>,
-    /// Represents `Suggests:`
-    pub suggests: Vec<Package>,
-    /// Represents `Supplements:`
-    pub supplements: Vec<Package>,
-    /// Represents `Enhances:`
-    pub enhances: Vec<Package>,
-    /// Represents `OrderWithRequires:`
-    pub orderwithrequires: Vec<Package>,
-    /// Represents `BuildRequires:`
-    pub buildrequires: Vec<Package>,
-    /// Represents `BuildConflicts:`
-    pub buildconflicts: Vec<Package>,
-    /// Represents `ExcludeArch:`
-    pub excludearch: Vec<String>,
-    /// Represents `ExclusiveArch:`
-    pub exclusivearch: Vec<String>,
-    /// Represents `ExcludeOS:`
-    pub excludeos: Vec<String>,
-    /// Represents `ExclusiveOS:`
-    pub exclusiveos: Vec<String>,
-    /// Represents `BuildArch:`, `BuildArchitectures:`
-    pub buildarch: Vec<String>,
-    /// Represents `Prefix:`, `Prefixes:`
-    pub prefix: Option<String>,
-    /// Represents `Docdir:`
-    pub docdir: Option<String>,
-    /// Represents `RemovePathPostFixes:`
-    pub removepathpostfixes: Vec<String>,
+        /// Repreesnts `Source0:`, `Source1:`, ...
+        pub sources: HashMap<u32, String>,
+        /// Repreesnts `Patch0:`, `Patch1:`, ...
+        pub patches: HashMap<u32, String>,
+        /// Represents `Requires:` and `Requires(...):`
+        pub requires: RPMRequires,
+    }
 }
 
 impl RPMSpec {
@@ -1078,8 +1040,8 @@ impl RPMSpec {
             spec.push_str(&header);
             spec.push('\n');
 
-            if !current.summary.is_empty() {
-                pop!(Summary: { &current.summary });
+            if current.summary.is_some() {
+                pop!(Summary: { &current.summary.as_deref().unwrap_or("") });
             }
             pop!(Group: ~current.group);
             pop!(Provides: ..~current.provides);
@@ -1756,115 +1718,7 @@ impl SpecParser {
     /// - `RemovePathPostfixes`
     #[tracing::instrument(skip(self, csm))]
     pub fn add_preamble(&mut self, name: &str, value: String, offset: usize, csm: &mut Consumer<impl Read>) -> Result<()> {
-        tracing::debug!("Adding preamble");
-        let rpm = &mut self.rpm;
-
-        macro_rules! opt {
-			($x:ident $y:ident) => {
-				if name == stringify!($x) {
-					if let Some(ref old) = rpm.$y {
-						warn!(
-							"overriding existing {} preamble value `{old}` to `{value}`",
-							stringify!($x)
-						);
-						self.errors.push(Err::Duplicate(0, stringify!($x).into())); // FIXME: what's the line number?
-					}
-					let m = MacroType::Runtime { s: csm.s.clone(), file: csm.file.clone(), offset, param: false, len: value.len() };
-					if let Some(v) = self.macros.get_mut(stringify!($y)) {
-						v.push(m);
-					} else {
-						self.macros.insert(stringify!($y).into(), vec![m]);
-					}
-					rpm.$y = Some(value);
-					return Ok(());
-				}
-			};
-			(~$x:ident $y:ident) => {
-				if name == stringify!($x) {
-					rpm.$y = value.parse()?;
-					return Ok(());
-				}
-			};
-			(%$x:ident $y:ident) => {
-				if name == stringify!($x) {
-					rpm.$y.append(&mut value.split_whitespace().map(|s| s.into()).collect());
-					return Ok(());
-				}
-			};
-			($a:ident $b:ident | $($x:ident $y:ident)|+) => {
-				opt!($a $b);
-				opt!($($x $y)|+);
-			}
-		}
-
-        if let RPMSection::Package(ref pkg) = self.section {
-            let rpm = rpm.packages.get_mut(pkg).expect("BUG: no subpackage in rpm.packages");
-            match name {
-                "Group" => {
-                    if let Some(ref old) = rpm.group {
-                        warn!("overriding existing Group preamble value `{old}` to `{value}`");
-                        self.errors.push(Err::Duplicate(0, "Group".into())); // FIXME: what's the line number?
-                    }
-                    rpm.name = Some(value);
-                    return Ok(());
-                },
-                "Summary" => {
-                    if !rpm.summary.is_empty() {
-                        warn!("overriding existing Summary preamble value `{}` to `{value}`", rpm.summary);
-                        self.errors.push(Err::Duplicate(0, "Summary".into())); // FIXME: what's the line number?
-                    }
-                    rpm.summary = value;
-                    return Ok(());
-                },
-                "License" => {
-                    if let Some(license) = &rpm.license {
-                        warn!("overriding existing License preamble value `{license}` to `{value}`");
-                        self.errors.push(Err::Duplicate(0, "License".into()));
-                    }
-                    rpm.license = Some(value);
-                    return Ok(());
-                },
-                "Provides" => return Package::add_query(&mut rpm.provides, &value),
-                "Obsoletes" => return Package::add_query(&mut rpm.obsoletes, &value),
-                "Conflicts" => return Package::add_query(&mut rpm.conflicts, &value),
-                "Suggests" => return Package::add_simple_query(&mut rpm.suggests, &value),
-                "Recommends" => return Package::add_simple_query(&mut rpm.recommends, &value),
-                "Enhances" => return Package::add_simple_query(&mut rpm.enhances, &value),
-                "Supplements" => return Package::add_simple_query(&mut rpm.supplements, &value),
-                _ => {}, // get to global below
-            }
-        }
-
-        opt!(Name name|Version version|Release release|License license|SourceLicense sourcelicense|URL url|BugURL bugurl|ModularityLabel modularitylabel|DistTag disttag|VCS vcs|Distribution distribution|Copyright copyright|Vendor vendor|Packager packager|Group group|Summary summary);
-        opt!(~AutoReqProv autoreqprov);
-        opt!(~AutoReq autoreq);
-        opt!(~AutoProv autoprov);
-        opt!(%ExcludeArch excludearch);
-        opt!(%ExclusiveArch exclusivearch);
-        opt!(%ExcludeOS exclusiveos);
-        opt!(%ExclusiveOS exclusiveos);
-        opt!(%BuildArch buildarch);
-        opt!(%BuildArchitectures buildarch);
-
-        match name {
-            "Epoch" => rpm.epoch = value.parse().map_err(|e: ParseIntError| eyre!(e).wrap_err("Failed to decode epoch to int"))?,
-            "Provides" => Package::add_query(&mut rpm.provides, &value)?,
-            "Conflicts" => Package::add_query(&mut rpm.conflicts, &value)?,
-            "Obsoletes" => Package::add_query(&mut rpm.obsoletes, &value)?,
-            "Recommends" => Package::add_simple_query(&mut rpm.recommends, &value)?,
-            "Suggests" => Package::add_simple_query(&mut rpm.suggests, &value)?,
-            "Supplements" => Package::add_simple_query(&mut rpm.supplements, &value)?,
-            "Enhances" => Package::add_simple_query(&mut rpm.enhances, &value)?,
-            "BuildRequires" => Package::add_query(&mut rpm.buildrequires, &value)?,
-            "OrderWithRequires" => todo!(),
-            "BuildConflicts" => todo!(),
-            "Prefixes" => todo!(),
-            "Prefix" => todo!(),
-            "DocDir" => todo!(),
-            "RemovePathPostfixes" => todo!(),
-            _ => self.errors.push(Err::UnknownPreamble(0, name.into())), // FIXME: what's the line number?
-        }
-        Ok(())
+        preamble_parser!(self name value offset csm)
     }
 
     // Parse the arguments provided to a parameterized macro.
