@@ -51,7 +51,6 @@ macro_rules! gen_read_helper {
                 if let Some(ch) = $reader.next() {
                     ch
                 } else {
-                    $reader.back();
                     exit!();
                 }
             };
@@ -68,6 +67,13 @@ macro_rules! gen_read_helper {
                 x
             }};
         }
+    };
+}
+
+#[macro_export]
+macro_rules! opt {
+    ($cond:expr => $out:expr) => {
+        if $cond { Some($out) } else { None }
     };
 }
 
@@ -145,13 +151,13 @@ impl<R: Read + ?Sized> Consumer<R> {
         parking_lot::RwLockReadGuard::map(self.s.read(), |s| s.get(r.start..r.end).unwrap())
     }
     #[inline]
-    pub fn back(&mut self) {
-        self.pos -= 1;
+    pub fn back(&mut self, last: char) {
+        self.pos -= last.len_utf8();
     }
     pub fn until(&mut self, f: impl Fn(char) -> bool) {
         while let Some(ch) = self.next() {
             if f(ch) {
-                self.back();
+                self.back(ch);
                 break;
             }
         }
@@ -160,7 +166,7 @@ impl<R: Read + ?Sized> Consumer<R> {
     pub fn read_before(&mut self, s: &mut String, f: impl Fn(char) -> bool) {
         while let Some(ch) = self.next() {
             if f(ch) {
-                self.back();
+                self.back(ch);
                 break;
             }
             s.push(ch);
@@ -183,8 +189,9 @@ impl<R: Read + ?Sized> Consumer<R> {
         }
     }
     pub fn peek(&mut self) -> Option<char> {
+        let p = self.pos;
         let out = self.next();
-        self.back();
+        self.pos = p;
         out
     }
     pub fn is_eof(&mut self) -> bool {
@@ -325,7 +332,7 @@ impl<R: Read + ?Sized> Consumer<R> {
         }
         Err(eyre!("Unexpected EOF"))
     }
-    pub fn read_til_endbrace(&mut self, brace: Brace) -> color_eyre::Result<String> {
+    pub fn read_before_endbrace(&mut self, brace: Brace) -> color_eyre::Result<String> {
         let start = self.pos;
         self.skip_til_endbrace(brace)?;
         Ok(self.range_string(start..self.pos - 1).unwrap())
@@ -513,7 +520,7 @@ pub mod textproc {
             '{' if quotes.pop() != Some('{') => return Err(eyre!("BUG: pushing back `{{` failed quotes check")),
             _ => {},
         }
-        reader.back();
+        reader.back(ch);
         Ok(())
     }
 

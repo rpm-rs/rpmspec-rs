@@ -6,7 +6,7 @@ use itertools::Itertools;
 use lazy_format::lazy_format as lzf;
 use parking_lot::RwLock;
 use regex::Regex;
-use rpmspec_common::{gen_read_helper, PErr as Err};
+use rpmspec_common::{gen_read_helper, opt, util::Brace, PErr as Err};
 use smartstring::alias::String;
 use std::env::consts::ARCH;
 use std::{
@@ -19,7 +19,7 @@ use std::{
     str::FromStr,
     sync::Arc,
 };
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, trace, warn};
 
 const PKGNAMECHARSET: &str = "_-().";
 lazy_static::lazy_static! {
@@ -1311,7 +1311,7 @@ impl SpecParser {
                     return Err(eyre!("Unexpected EOF"));
                 };
                 if x == '(' {
-                    csm.skip_til_endbrace(rpmspec_common::util::Brace::Round)?;
+                    csm.skip_til_endbrace(Brace::Round)?;
                     param = true;
                     x = csm.next().ok_or_else(|| eyre!("Unexpected EOF"))?;
                 }
@@ -1881,6 +1881,7 @@ impl SpecParser {
             if ch == '%' {
                 space = false;
                 if exit_if_eof!(else peek) == '%' {
+                    reader.next();
                     content.push('%');
                     continue;
                 }
@@ -1940,14 +1941,14 @@ impl SpecParser {
         if follow == '*' {
             res.push_str(raw_args); // %**
         } else {
-            def.back();
+            def.back(follow);
             res.push_str(&args.join(" ")); // %*
         }
     }
 
     #[tracing::instrument(skip(self, def))]
     fn __paramm_inner(&mut self, def: &mut Consumer<impl Read>, raw_args: &str, flags: &[String], res: &mut String) -> Result<()> {
-        let mut content = def.read_til_endbrace(rpmspec_common::util::Brace::Curly)?;
+        let mut content = def.read_before_endbrace(Brace::Curly)?;
 
         #[allow(clippy::option_if_let_else)] // WARN refactor fail count: 2
         let notflag = if let Some(x) = content.strip_prefix('!') {
@@ -1977,7 +1978,7 @@ impl SpecParser {
             }
             let mut args = raw_args.split(' ');
             if !notflag {
-                if let Some(n) = args.clone().enumerate().find_map(|(n, x)| if x == content { Some(n) } else { None }) {
+                if let Some(n) = args.clone().enumerate().find_map(|(n, x)| opt!(x == content => n)) {
                     if let Some(arg) = args.nth(n + 1) {
                         res.push_str(arg);
                     }
@@ -2024,10 +2025,11 @@ impl SpecParser {
                     let mut macroname = String::new();
                     macroname.push(ch);
                     def.read_before(&mut macroname, |ch| !ch.is_numeric());
-                    out.push_str(args.get(macroname.parse::<usize>().expect("Cannot parse numeric macroname") - 1).map_or("", |s| &*s));
+                    let num: usize = macroname.parse().expect("Cannot parse numeric macroname");
+                    out.push_str(args.get(num - 1).map_or("", |s| &*s));
                 },
-                _ => {
-                    def.back();
+                ch => {
+                    def.back(ch);
                     // TODO: def.range()?
                     self._start_parse_raw_macro(out, def)?;
                 },
@@ -2092,7 +2094,7 @@ impl SpecParser {
     }
 
     fn __rawm_shellexpand(strout: &mut String, chars: &mut Consumer<impl Read>) -> Result<()> {
-        let shellcmd = chars.read_til_endbrace(rpmspec_common::util::Brace::Round)?;
+        let shellcmd = chars.read_before_endbrace(Brace::Round)?;
         Err(match Command::new("sh").arg("-c").arg(&*shellcmd).output() {
             Ok(out) if out.status.success() => {
                 strout.push_str(core::str::from_utf8(&out.stdout)?.trim_end_matches('\n'));
@@ -2148,97 +2150,83 @@ impl SpecParser {
     #[tracing::instrument(skip(self, chars))]
     pub fn _start_parse_raw_macro<R: Read>(&mut self, out: &mut String, chars: &mut Consumer<R>) -> Result<(), Err> {
         let (mut notflag, mut question, mut first) = (false, false, true);
-        let (mut content, mut quotes) = (String::new(), String::new());
-        gen_read_helper!(chars quotes);
-        while let Some(ch) = chars.next() {
-            match textproc::flag(&mut question, &mut notflag, &mut first, ch) {
-                Some(true) => continue,
-                Some(false) => {},
-                None => {
-                    // %abc?...
-                    //  └┬┘└─── stop
-                    //   └ macro name
-                    chars.back();
-                    break;
-                },
-            }
-            textproc::chk_ps(&mut quotes, ch)?; // we read until we encounter '}' or ':' or the end
-            match ch {
-                '{' | '[' | '(' if notflag || question => {
-                    error!("You are not supposed to follow `{{` or `[` or `(` after flags (`!` or `?`).");
-                    chars.back();
-                    break;
-                },
-                '{' | '[' | '(' if !content.is_empty() => {
-                    textproc::back(chars, &mut quotes, ch)?;
-                    break;
-                },
-                '{' => {
-                    first = true;
-                    let mut name = String::new();
-                    while let Some(ch) = chars.next() {
-                        textproc::chk_ps(&mut quotes, ch)?;
-                        if quotes.is_empty() {
-                            self._macro_expand_flagproc(question, notflag, chars, &name, out, true)?;
-                            return Ok(());
-                        }
-                        if ch == ':' {
-                            let after_colon_pos = chars.pos;
-                            chars.skip_til_endbrace(rpmspec_common::util::Brace::Curly)?;
-                            let mut chars = chars.range(after_colon_pos..chars.pos - 1).expect("Cannot unwind consumer to `{*:...}`");
-                            if question {
-                                if self.macros.contains_key(&name) ^ notflag {
-                                    self.parse_macro(out, &mut chars)?;
-                                }
-                                return Ok(());
-                            }
-                            self._macro_expand_flagproc(false, notflag, &mut chars, &name, out, true)?;
-                            return Ok(());
-                        }
-                        match textproc::flag(&mut question, &mut notflag, &mut first, ch) {
-                            Some(true) => continue,
-                            Some(false) => name.push(ch),
-                            None => return Err(eyre!("Unexpected flag `{ch}` in %{{...?...}}").into()),
-                        }
-                    }
-                    return Err(eyre!("EOF while parsing `%{{...`").into());
-                },
-                '[' => {
-                    if notflag || question {
-                        error!("flags (! and ?) are not supported for %[].");
-                    }
-                    let start = chars.pos;
-                    chars.skip_til_endbrace(rpmspec_common::util::Brace::Square)?;
-                    return self.parse_expr(out, &mut chars.range(start..chars.pos - 1).expect("Cannot unwind consumer to `%[...]`"));
-                },
-                '(' => {
-                    if notflag || question {
-                        error!("flags (! and ?) are not supported for %().");
-                    }
-                    Self::__rawm_shellexpand(out, chars)?;
+        let mut macroname = String::new();
+        loop {
+            let Some(firstc) = chars.next() else {
+                out.push('%');
+                return Ok(());
+            };
+            match firstc {
+                '{' | '[' | '(' if !first => {
+                    out.push('%');
+                    out.push(firstc);
                     return Ok(());
                 },
-                '%' if first => {
+                '%' => {
                     out.push('%');
                     return Ok(());
                 },
-                _ if !(ch.is_ascii_alphanumeric() || ch == '_') => {
-                    textproc::back(chars, &mut quotes, ch)?;
-                    break;
+                '{' => {
+                    // first read the flags
+                    let ch = loop {
+                        match chars.next() {
+                            None => return Err(eyre!("Unexpected EOF in %{{").into()),
+                            Some('!') => notflag = true,
+                            Some('?') => question = true,
+                            Some(ch) => break ch,
+                        }
+                    };
+                    // this impl is a bit slow (∵ double read)
+                    // but hey it works
+                    chars.back(ch);
+                    let start = chars.pos;
+                    let content = chars.read_before_endbrace(Brace::Curly)?;
+                    let mut inner_chars = chars.range(start..chars.pos - 1).unwrap();
+                    let mut name = String::new();
+                    inner_chars.read_before(&mut name, |ch| ch.is_whitespace() || ch == ':');
+                    if inner_chars.pos == inner_chars.end {
+                        // content is macroname
+                        return Ok(self._macro_expand_flagproc(question, notflag, chars, &content, out, true)?);
+                    }
+                    inner_chars.next(); // get after the separator
+                    if question {
+                        if self.macros.contains_key(&name) ^ notflag {
+                            self.parse_macro(out, &mut inner_chars)?;
+                        }
+                        return Ok(());
+                    }
+                    self._macro_expand_flagproc(false, notflag, &mut inner_chars, &name, out, true)?;
+                    return Ok(());
                 },
-                _ => {},
-            }
+                '[' => {
+                    let start: usize = chars.pos;
+                    chars.skip_til_endbrace(Brace::Square)?;
+                    return self.parse_expr(out, &mut chars.range(start..chars.pos - 1).expect("Cannot unwind consumer to `%[...]`"));
+                },
+                '(' => return Ok(Self::__rawm_shellexpand(out, chars)?),
+                '!' => notflag = true,
+                '?' => question = true,
+                _ if firstc.is_ascii_alphabetic() || firstc == '_' => {
+                    // directly parse macro name
+                    macroname.push(firstc);
+                    chars.read_before(&mut macroname, |ch| !(ch.is_ascii_alphanumeric() || ch == '_'));
+                    // `%macro`, but if this is the start of the line, `_rp_macro()` might need the remaining line
+                    // FIXME:
+                    //       `%aaa.this_should_not_get_passed_into_it_but_it_does_get_passed_into_it`
+                    //            ^*****************************************************************
+                    // somehow we need to diff 1. curly; 2. line start; 3. others
+                    self._macro_expand_flagproc(question, notflag, chars, &macroname, out, false)?;
+                    return Ok(());
+                },
+                _ => {
+                    out.push('%');
+                    out.push(firstc);
+                    return Ok(());
+                },
+            };
+            // question or notflag
             first = false;
-            content.push(ch);
         }
-        exit_chk!();
-        // `%macro`, but if this is the start of the line, `_rp_macro()` might need the remaining line
-        // FIXME:
-        //       `%aaa.this_should_not_get_passed_into_it_but_it_does_get_passed_into_it`
-        //            ^*****************************************************************
-        // somehow we need to diff 1. curly; 2. line start; 3. others
-        self._macro_expand_flagproc(question, notflag, chars, &content, out, false)?;
-        Ok(())
     }
 
     /// Creates a new RPM spec parser.

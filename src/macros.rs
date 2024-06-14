@@ -337,11 +337,10 @@ __internal_macros!(
         let mut stdout = std::io::stdout().lock();
         for (k, v) in &p.macros {
             if let Some(v) = v.last() {
-                if let MacroType::Internal(_) = v {
+                let MacroType::Runtime { file, offset, len, s, param } = v else {
                     stdout.write_fmt(format_args!("[<internal>]\t%{k}\t<builtin>\n"))?;
                     continue;
-                }
-                let MacroType::Runtime { file, offset, len, s, param } = v else { unreachable!() };
+                };
                 let ss = s.read();
                 let front = &ss[..*offset];
                 let nline = front.chars().filter(|c| *c == '\n').count() + 1;
