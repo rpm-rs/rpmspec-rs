@@ -1,12 +1,12 @@
 //! Parser for rpmspec. See [`SpecParser`].
 use crate::macros::MacroType;
-use crate::util::{textproc, Consumer};
+use crate::util::Consumer;
 use color_eyre::{eyre::eyre, Help, Result, SectionExt};
 use itertools::Itertools;
 use lazy_format::lazy_format as lzf;
 use parking_lot::RwLock;
 use regex::Regex;
-use rpmspec_common::{gen_read_helper, opt, util::Brace, PErr as Err};
+use rpmspec_common::{opt, util::Brace, PErr as Err};
 use smartstring::alias::String;
 use std::env::consts::ARCH;
 use std::{
@@ -135,12 +135,12 @@ impl Package {
     /// not ascii-alphanumeric and not in [`PKGNAMECHARSET`].
     pub fn add_simple_query(pkgs: &mut Vec<Self>, query: &str) -> Result<()> {
         let mut last = String::new();
-        let mut quotes = String::new();
+        let mut quotes = vec![];
         let chrs = query.trim().chars();
         for ch in chrs {
             if ch == ' ' || ch == ',' {
                 if !quotes.is_empty() {
-                    return Err(eyre!("Unclosed quotes: `{quotes}`").note(format!("Reading query `{query}`")).note(lzf!("Parsing `{last}`")).note(lzf!("Deliminator `{ch}`")));
+                    return Err(eyre!("Unclosed quotes: `{quotes:?}`").note(format!("Reading query `{query}`")).note(lzf!("Parsing `{last}`")).note(lzf!("Deliminator `{ch}`")));
                 }
                 if !last.is_empty() {
                     pkgs.push(Self::new(take(&mut last)));
@@ -153,11 +153,19 @@ impl Package {
                     .note(lzf!("Parsing `{last}`"))
                     .suggestion(lzf!("Only ascii alphanumeric characters and `{PKGNAMECHARSET}` are valid")));
             }
-            textproc::chk_ps(&mut quotes, ch)?;
+            if let Some(brace) = Brace::open_ch(ch) {
+                quotes.push(brace);
+            } else if let Some(brace) = Brace::close_ch(ch) {
+                match quotes.pop() {
+                    Some(q) if q == brace => {},
+                    Some(q) => return Err(eyre!("Expected {q:?}, found `{ch}` ({brace:?})")),
+                    None => return Err(eyre!("Unexpected closing brace `{ch}` ({brace:?})")),
+                }
+            }
             last.push(ch);
         }
         if !quotes.is_empty() {
-            return Err(eyre!("Unclosed quotes: `{quotes}`").note(format!("Reading query `{query}`")).note(lzf!("Parsing `{last}`")).warning("Unexpected EOL"));
+            return Err(eyre!("Unclosed quotes: `{quotes:?}`").note(format!("Reading query `{query}`")).note(lzf!("Parsing `{last}`")).warning("Unexpected EOL"));
         }
         if !last.is_empty() {
             pkgs.push(Self::new(last));
@@ -1859,38 +1867,26 @@ impl SpecParser {
         Ok(())
     }
 
-    // TODO: optimizations?
+    // Parse the arguments provided to a parameterized macro.
+    //
+    // This fn assumes that `reader` has a finite scope confined to the arguments in question and nothing more.
+    // The scope in concern shall be obtained from [`Consumer.skip_til_eot()`].
     #[tracing::instrument(skip(self, reader))]
     fn _param_macro_args(&mut self, reader: &mut Consumer<impl Read>) -> Result<(String, Vec<String>, Vec<String>)> {
+        // flags aren't necessarily 1 char: e.g. `%autosetup -p1`
+        let (mut content, mut flags) = (String::new(), vec![]);
         // we start AFTER %macro_name
-        let (mut content, mut quotes, mut flags) = (String::new(), String::new(), vec![]);
-        gen_read_helper!(reader quotes);
-        macro_rules! exit {
-            () => {
-                exit_chk!();
-                let args = content.split(' ').filter(|x| !x.starts_with('-')).map(|x| x.into()).collect();
-                return Ok((content, args, flags));
-            };
-        }
-        // if there's a space, it's `%macro_name ...`
-        // otherwise it's most likely `%{macro_name:...}`
-        // but yeah we'll have to trim it anyway
         reader.until(|ch| !ch.is_whitespace());
         let mut space = true;
-        'main: while let Some(ch) = reader.next() {
+        while let Some(ch) = reader.next() {
             if ch == '%' {
                 space = false;
-                if exit_if_eof!(else peek) == '%' {
-                    reader.next();
-                    content.push('%');
-                    continue;
-                }
                 self._start_parse_raw_macro(&mut content, reader)?;
                 continue;
             }
             if ch == '-' && space {
                 space = false;
-                let ch = next!(~);
+                let Some(ch) = reader.next() else { break };
                 if !ch.is_ascii_alphabetic() {
                     return Err(eyre!("Argument flag `-{ch}` in parameterized macro is not alphabetic"));
                 }
@@ -1904,24 +1900,10 @@ impl SpecParser {
             }
             if ch == '\\' {
                 space = false;
-                // if the line ends with `\` (excl whitespace) then also parse next line
-                content = content.trim_end().into();
-                content.push(' ');
-                while let Some(ch) = reader.next() {
-                    if ch == '\n' {
-                        reader.until(|ch| !ch.is_whitespace());
-                        continue 'main;
-                    }
-                    if !ch.is_whitespace() {
-                        return Err(eyre!("Got `{ch}` after `\\` before new line"));
-                    }
-                }
-                return Err(eyre!("Unexpected EOF after `\\`"));
+                // safe to assume is new line (eot?)
+                reader.until(|ch| !ch.is_whitespace());
+                continue;
             }
-            if ch == '\n' && quotes.is_empty() {
-                break;
-            }
-            textproc::chk_ps(&mut quotes, ch)?;
             // compress whitespace to ' '
             if ch.is_whitespace() {
                 if !space {
@@ -1930,10 +1912,11 @@ impl SpecParser {
                 }
                 continue;
             }
-            content.push(ch);
             space = false;
+            content.push(ch);
         }
-        exit!();
+        let args = content.trim_end_matches(' ').split(' ').filter(|x| !x.starts_with('-')).map(|x| x.into()).collect();
+        Ok((content, args, flags))
     }
 
     #[inline]
@@ -2002,12 +1985,15 @@ impl SpecParser {
     #[tracing::instrument(skip(self, def, reader))]
     fn _param_macro(&mut self, name: &str, def: &mut Consumer<impl Read>, reader: &mut Consumer<impl Read>, out: &mut String) -> Result<()> {
         let (raw_args, args, flags) = self._param_macro_args(reader)?;
-        macro_rules! exit {
+        macro_rules! next {
             () => {
-                return Ok(());
+                if let Some(ch) = def.next() {
+                    ch
+                } else {
+                    return Ok(());
+                }
             };
         }
-        gen_read_helper!(def dummy);
 
         while let Some(ch) = def.next() {
             if ch != '%' {
@@ -2015,8 +2001,8 @@ impl SpecParser {
                 continue;
             }
             // ? https://rpm-software-management.github.io/rpm/manual/macros.html
-            match next!(~) {
-                '*' => Self::__paramm_percent_star(next!(~), out, &raw_args, &args, def),
+            match next!() {
+                '*' => Self::__paramm_percent_star(next!(), out, &raw_args, &args, def),
                 '#' => out.push_str(&args.len().to_string()),
                 '0' => out.push_str(name),
                 '{' => self.__paramm_inner(def, &raw_args, &flags, out)?,
@@ -2339,7 +2325,7 @@ mod tests {
         let mut parser = super::SpecParser::new();
         assert_eq!(
             parser._param_macro_args(&mut Consumer::<RR>::from("-a hai -b asdfsdklj \\  \n abcd\ne"))?,
-            ("-a hai -b asdfsdklj abcd".into(), vec!["hai".into(), "asdfsdklj".into(), "abcd".into()], vec!["a".into(), "b".into()])
+            ("-a hai -b asdfsdklj abcd e".into(), vec!["hai".into(), "asdfsdklj".into(), "abcd".into(), "e".into()], vec!["a".into(), "b".into()])
         );
         Ok(())
     }

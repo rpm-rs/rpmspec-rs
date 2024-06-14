@@ -88,7 +88,7 @@ __internal_macros!(
         define(p, o, r)
     }
     macro undefine(p, _, r) {
-        p.macros.remove(&r.read_til_eol().unwrap());
+        p.macros.remove(&*r.read_til_eot().unwrap());
         Ok(())
     }
     macro load(p, _, r) {
