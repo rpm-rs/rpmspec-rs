@@ -43,6 +43,7 @@ mlua = { version = "0.9.8", features = ["luajit"] }
 umask = "2.1.0"
 itertools = "0.13.0"
 paste = "1.0.15"
+file-format = "0.25.0"
 
 [workspace]
 members = [

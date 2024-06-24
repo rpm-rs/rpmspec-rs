@@ -36,7 +36,6 @@ pub mod parse;
 pub mod lua;
 pub mod macros;
 mod preamblemaker;
-pub mod tools;
 
 pub use parse::RPMSpec;
 pub use rpmspec_common::{error, util};

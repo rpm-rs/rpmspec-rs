@@ -34,14 +34,16 @@ pub enum CmprxFmt {
 impl TryFrom<&Path> for CmprxFmt {
     type Error = std::io::Error;
     fn try_from(value: &Path) -> Result<Self, Self::Error> {
-        let mut buf: [u8; 6] = [0; 6];
-        macro_rules! magic {
-            ($x:ident: $($c:expr)+) => {
-                if buf.starts_with(&[$($c,)+]) {
-                    return Ok(Self::$x);
-                }
-            };
+        let fmt = file_format::FileFormat::from_file(value)?;
+        
+        
+        // Actuaslly we might not even need enums
+        // can just delete this entire file
+        match fmt {
+            file_format::FileFormat::Bzip2 => Ok(Self::BZIP2),
         }
+        // suggestion: use https://crates.io/crates/file-format ?
+        // While gem is not a compression format, it's literally just a tarball
         let mut f = std::fs::File::open(value)?;
         f.read_exact(&mut buf)?;
         magic!(BZIP2: b'B' b'Z' b'h');
@@ -63,7 +65,7 @@ impl TryFrom<&Path> for CmprxFmt {
                 return Ok(Self::LZMA);
             }
             if ext == "gem" || ext == "GEM" {
-                return Ok(Self::GEM);
+                return Ok(Self::GEM); // tarballs in disguise
             }
         }
         Ok(Self::Nil)

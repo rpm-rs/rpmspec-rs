@@ -254,23 +254,24 @@ __internal_macros!(
         url2path(p, o, r)
     }
     macro uncompress(_, o, r) {
-        use crate::tools::uncompress::CmprxFmt;
         //? https://github.com/rpm-software-management/rpm/blob/master/tools/rpmuncompress.c#L69
-        let path: String = r.collect();
-        o.push_str(match CmprxFmt::try_from(Path::new(&*path)) {
-            Ok(CmprxFmt::Nil) => "cat ",
-            Ok(CmprxFmt::Other) => "gzip -dc ",
-            Ok(CmprxFmt::BZIP2) => "bzip2 -dc ",
-            Ok(CmprxFmt::ZIP) => "unzip ",
-            Ok(CmprxFmt::LZMA | CmprxFmt::XZ) => "xz -dc ",
-            Ok(CmprxFmt::LZIP) => "lzip -dc ",
-            Ok(CmprxFmt::LRZIP) => "lrzip -dqo- ",
-            Ok(CmprxFmt::SEVENZIP) => "7zip x ",
-            Ok(CmprxFmt::ZSTD) => "zstd -dc ",
-            Ok(CmprxFmt::GEM) => "gem unpack ",
-            Err(_) => return Ok(()),
+        let pathstr: String = r.collect();
+        let path = std::path::PathBuf::from(&*pathstr);
+        let Ok(fmt) = file_format::FileFormat::from_file(&path) else { return Ok(()) };
+        o.push_str(match fmt {
+            file_format::FileFormat::ArbitraryBinaryData => "cat ",
+            file_format::FileFormat::Gzip => "gzip -dc ",
+            file_format::FileFormat::Bzip2 => "bzip2 -dc ",
+            file_format::FileFormat::Zip => "unzip ",
+            file_format::FileFormat::LempelZivMarkovChainAlgorithm | file_format::FileFormat::Xz => "xz -dc ",
+            file_format::FileFormat::Lzip => "lzip -dc ",
+            file_format::FileFormat::LongRangeZip => "lrzip -dqo- ",
+            file_format::FileFormat::SevenZip => "7zip x ",
+            file_format::FileFormat::Zstandard => "zstd -dc ",
+            file_format::FileFormat::TapeArchive if path.extension() == Some(std::ffi::OsStr::new("gem")) => "gem unpack ",
+            _ => return Err(eyre!("Unexpected file format: {fmt:?}").into()),
         });
-        o.push_str(&path);
+        o.push_str(&pathstr);
         Ok(())
     }
     macro getncpus(_, o, _) {
