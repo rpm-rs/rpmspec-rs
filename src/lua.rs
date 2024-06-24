@@ -40,13 +40,12 @@ impl RpmFileIOType {
                 }
                 Ok(buf)
             },
-            Self::Fdio => Ok(bs),
+            Self::Fdio | Self::Ufdio => Ok(bs),
             Self::Gzdio(dc) => {
                 let mut buf = vec![];
                 dc.decompress_vec(&bs, &mut buf, flate2::FlushDecompress::None).into_lua_err()?;
                 Ok(buf)
             },
-            Self::Ufdio => Ok(bs),
             Self::Xzdio => {
                 // let mut buf = vec![];
                 // dc.read_to_end(&mut buf);
@@ -134,7 +133,7 @@ impl mlua::UserData for RpmFile {
                 buf.truncate(size);
                 return this.modes.iotype.process(buf);
             };
-            let mut buf = Vec::with_capacity(len);
+            let mut buf = vec![0; len];
             this.innerfile.read_exact(&mut buf).into_lua_err()?;
             this.modes.iotype.process(buf)
         });
@@ -209,7 +208,7 @@ macro_rules! __lua {
                 )+
             }
         )+
-        pub(crate) fn run(rpmparser: &Arc<RwLock<SpecParser>>, script: &str) -> Result<String> {
+        pub(crate) fn run(rpmparser: &Arc<RwLock<SpecParser>>, script: &str) -> color_eyre::Result<String> {
             let lua = Lua::new();
             let printout = Arc::new(RwLock::new(String::new()));
             {
@@ -230,7 +229,7 @@ macro_rules! __lua {
                         Ok(())
                     })?,
                 )?;
-                lua.load(script).exec()?;
+                lua.load(script).exec().map_err(|e| color_eyre::eyre::eyre!("Cannot execute script: {script}").wrap_err(e))?;
             }
             drop(lua);
             Ok(Arc::try_unwrap(printout).expect("Cannot unwrap Arc for print() output in lua").into_inner())
@@ -305,13 +304,13 @@ __lua!(
     }
     mod posix {
         fn access(_, _, args=>(String, Option<String>)): bool {
+            use std::os::unix::fs::PermissionsExt;
             let (path, mode) = args;
             let mode = mode.as_ref().map_or("f", std::string::String::as_str);
             let p = std::path::Path::new(&path);
             if mode.contains('f') && !p.exists(){
                 return Ok(false);
             }
-            use std::os::unix::fs::PermissionsExt;
             let perms = p.metadata().map_err(ExternalError::into_lua_err)?.permissions().mode();
             let x = perms & 0o7;
             let w = (perms >> 3) & 0o7;
@@ -440,8 +439,8 @@ __lua!(
             };
             Ok(match &*select {
                 "name" => Value::String(unsafe { lua.create_string(CStr::from_ptr(p.pw_name).to_bytes())? }),
-                "uid" => Value::Number(p.pw_uid as f64),
-                "gid" => Value::Number(p.pw_gid as f64),
+                "uid" => Value::Number(f64::from(p.pw_uid)),
+                "gid" => Value::Number(f64::from(p.pw_gid)),
                 "dir" => Value::String(unsafe { lua.create_string(CStr::from_ptr(p.pw_dir).to_bytes())? }),
                 "shell" => Value::String(unsafe { lua.create_string(CStr::from_ptr(p.pw_shell).to_bytes())? }),
                 "gecos" => Value::String(unsafe { lua.create_string(CStr::from_ptr(p.pw_gecos).to_bytes())? }),
@@ -470,13 +469,13 @@ __lua!(
             };
             Ok(mlua::Value::Number(unsafe {
                 match &*arg {
-                    "egid" => libc::getegid() as f64,
-                    "euid" => libc::geteuid() as f64,
-                    "gid" => libc::getgid() as f64,
-                    "uid" => libc::getuid() as f64,
-                    "pgrp" => libc::getpgrp() as f64,
-                    "pid" => libc::getpid() as f64,
-                    "ppid" => libc::getppid() as f64,
+                    "egid" => f64::from(libc::getegid()),
+                    "euid" => f64::from(libc::geteuid()),
+                    "gid" => f64::from(libc::getgid()),
+                    "uid" => f64::from(libc::getuid()),
+                    "pgrp" => f64::from(libc::getpgrp()),
+                    "pid" => f64::from(libc::getpid()),
+                    "ppid" => f64::from(libc::getppid()),
                     _ => return Err("Invalid argument to getprocessid()").into_lua_err(),
                 }
             }))
@@ -615,7 +614,7 @@ __lua!(
             let currtime = unsafe { libc::time(std::ptr::null_mut()) };
             let modtime = mtime.unwrap_or(currtime);
             let actime = ctime.unwrap_or(currtime);
-            let times = libc::utimbuf { modtime, actime };
+            let times = libc::utimbuf { actime, modtime };
             Ok(unsafe { libc::utime(
                 CString::new(path).into_lua_err()?.as_ptr(),
                 std::ptr::from_ref(&times)

@@ -40,11 +40,11 @@ macro_rules! preamble_maker {
         // create macros for populating preamble parsing fns
         macro_rules! preamble_pkg_parser {
             ($self:ident $rpm:ident $pkg:ident $name:ident $value:ident $offset:ident $csm:ident) => {
-                let $rpm = $rpm.packages.get_mut($pkg).expect("no subpkgs in rpm.packages");
-
                 $(
                     const [<__PREAMBLE_MAKER_P_ $fieldp:upper>]: &str = stringify!($fieldp);
                 )*
+
+                let $rpm = $rpm.packages.get_mut($pkg).expect("no subpkgs in rpm.packages");
 
                 match $name {
                     $(
@@ -58,16 +58,16 @@ macro_rules! preamble_maker {
         }
         macro_rules! preamble_parser {
             ($self:ident $name:ident $value:ident $offset:ident $csm:ident) => {{
+                $(
+                    const [<__PREAMBLE_MAKER_G_ $field:upper>]: &str = stringify!($field);
+                )*
+
                 // ::tracing::debug!("Adding preamble");
                 let rpm = &mut $self.rpm;
 
                 if let RPMSection::Package(ref pkg) = $self.section {
                     preamble_pkg_parser!($self rpm pkg $name $value $offset $csm);
                 }
-
-                $(
-                    const [<__PREAMBLE_MAKER_G_ $field:upper>]: &str = stringify!($field);
-                )*
 
                 match $name {
                     $(

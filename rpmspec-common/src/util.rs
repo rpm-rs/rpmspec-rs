@@ -11,7 +11,11 @@ use std::{
 #[macro_export]
 macro_rules! opt {
     ($cond:expr => $out:expr) => {
-        if $cond { Some($out) } else { None }
+        if $cond {
+            Some($out)
+        } else {
+            None
+        }
     };
 }
 
@@ -84,7 +88,6 @@ impl<R: Read + ?Sized> Consumer<R> {
         self.pos = cur;
         Some(ret)
     }
-    #[must_use]
     pub fn must_range_str(&self, r: std::ops::Range<usize>) -> parking_lot::MappedRwLockReadGuard<str> {
         parking_lot::RwLockReadGuard::map(self.s.read(), |s| s.get(r.start..r.end).unwrap())
     }
@@ -112,7 +115,7 @@ impl<R: Read + ?Sized> Consumer<R> {
     }
     /// Just like [`read_before()`], but includes the last character
     pub fn read_until(&mut self, s: &mut String, f: impl Fn(char) -> bool) {
-        while let Some(ch) = self.next() {
+        for ch in self.by_ref() {
             s.push(ch);
             if f(ch) {
                 break;
@@ -120,7 +123,7 @@ impl<R: Read + ?Sized> Consumer<R> {
         }
     }
     pub fn after(&mut self, f: impl Fn(char) -> bool) {
-        while let Some(ch) = self.next() {
+        for ch in self.by_ref() {
             if f(ch) {
                 return;
             }

@@ -3,6 +3,7 @@
 //! <https://rpm-software-management.github.io/rpm/manual/macros.html>
 use crate::{parse::SpecParser, util::Consumer};
 use color_eyre::eyre::eyre;
+use itertools::Itertools;
 use parking_lot::RwLock;
 use rpmspec_common::PErr as PE;
 use smartstring::alias::String;
@@ -126,6 +127,7 @@ __internal_macros!(
     }
     macro lua(p, o, r) {
         let content: String = r.collect();
+        let content = content.lines().map(|line| line.trim_end().trim_end_matches('\\')).join("\n");
         let parser = Arc::new(RwLock::new(std::mem::take(p)));
         let out = crate::lua::run(&parser, &content)?;
         std::mem::swap(p, &mut Arc::try_unwrap(parser).expect("Cannot unwrap Arc for print() output in lua").into_inner()); // break down Arc then break down RwLock
@@ -341,6 +343,7 @@ __internal_macros!(
                     stdout.write_fmt(format_args!("[<internal>]\t%{k}\t<builtin>\n"))?;
                     continue;
                 };
+                //? https://github.com/rust-lang/rust-clippy/issues/11279
                 let ss = s.read();
                 let front = &ss[..*offset];
                 let nline = front.chars().filter(|c| *c == '\n').count() + 1;

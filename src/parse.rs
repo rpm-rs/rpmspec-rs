@@ -940,6 +940,9 @@ impl RPMSpec {
     }
 
     /// Write the content of [`RPMSpec`] into a file specified by the path.
+    ///
+    /// # Errors
+    /// - I/O Error (Failure to write to file)
     pub fn save_to<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
         std::fs::write(path, self.render())
     }
@@ -1093,16 +1096,16 @@ impl RPMSpec {
             spec.push_str(&self.files.incl);
         }
         spec.push('\n');
-        if !self.files.raw.is_empty() {
-            spec.push_str(&self.files.raw);
-        } else {
+        if self.files.raw.is_empty() {
             todo!()
+        } else {
+            spec.push_str(&self.files.raw);
         }
 
-        if !self.changelog.raw.is_empty() {
-            spec.push_str(&self.changelog.raw);
-        } else {
+        if self.changelog.raw.is_empty() {
             todo!()
+        } else {
+            spec.push_str(&self.changelog.raw);
         }
 
         spec
@@ -1260,9 +1263,7 @@ impl SpecParser {
     #[tracing::instrument(skip(self))]
     pub fn load_macro_from_file(&mut self, path: &Path) -> Result<()> {
         debug!(path=?path.display(), "Loading macros from file");
-        let mut csm = Consumer::default();
-        csm.r = Some(Arc::new(RwLock::new(BufReader::new(Box::new(std::fs::File::open(path)?)))));
-        csm.file = Arc::from(path);
+        let mut csm = Consumer { r: Some(Arc::new(RwLock::new(BufReader::new(Box::new(std::fs::File::open(path)?))))), file: Arc::from(path), ..Default::default() };
         while let Some(ch) = csm.next() {
             if ch.is_whitespace() {
                 continue;
@@ -1361,6 +1362,9 @@ impl SpecParser {
     }
 
     /// Handles conditions as if they are sections, like `%if` and `%elifarch`, etc.
+    /// 
+    /// # Errors
+    /// Fails if there are parsing failures / macro evaluation failures
     pub fn _handle_conditions(&mut self, start: &str, remain: &str) -> Result<bool> {
         // TODO: parse using RPM expressions
         match start {
@@ -1449,7 +1453,7 @@ impl SpecParser {
             return Ok(false);
         };
         let mut parsed_remain = String::new();
-        consumer.after(|ch| ch.is_whitespace());
+        consumer.after(char::is_whitespace);
         let remainpos = consumer.pos;
         self.parse_macro(&mut parsed_remain, consumer)?;
         let mut remain = parsed_remain;
@@ -1679,7 +1683,6 @@ impl SpecParser {
     /// # Errors
     /// - The preamble is unknown / invalid
     pub fn add_list_preamble(&mut self, name: &str, digit: u32, value: &str) -> Result<()> {
-        let value = value;
         let rpm = &mut self.rpm;
         macro_rules! no_override_ins {
             ($attr:ident) => {{
@@ -1769,7 +1772,7 @@ impl SpecParser {
             space = false;
             content.push(ch);
         }
-        let args = content.trim_end_matches(' ').split(' ').filter(|x| !x.starts_with('-')).map(|x| x.into()).collect();
+        let args = content.trim_end_matches(' ').split(' ').filter(|x| !x.starts_with('-')).map_into().collect();
         Ok((content, args, flags))
     }
 
@@ -1785,28 +1788,19 @@ impl SpecParser {
 
     #[tracing::instrument(skip(self, def))]
     fn __paramm_inner(&mut self, def: &mut Consumer<impl Read>, raw_args: &str, flags: &[String], res: &mut String) -> Result<()> {
-        let mut content = def.read_before_endbrace(Brace::Curly)?;
+        let start = def.pos;
+        let content = def.read_before_endbrace(Brace::Curly)?;
 
-        #[allow(clippy::option_if_let_else)] // WARN refactor fail count: 2
-        let notflag = if let Some(x) = content.strip_prefix('!') {
-            content = x.into();
-            true
+        let (mut content, notflag) = content.strip_prefix('!').map_or_else(|| (&*content, false), |x| (x, true));
+        let expand = if let Some((name, e)) = content.split_once(':') {
+            content = name;
+            e
         } else {
-            false
-        };
-        let expand = {
-            // WARN refactor fail count: 1
-            let binding = content.clone();
-            if let Some((name, e)) = binding.split_once(':') {
-                content = name.to_string().into();
-                e.into()
-            } else {
-                binding
-            }
+            content
         };
         if !content.starts_with('-') {
             // normal %macros
-            self._start_parse_raw_macro(res, &mut def.range(def.pos - content.len() - 2..def.pos).expect("Cannot unwind consumer to `{...}`"))?;
+            self._start_parse_raw_macro(res, &mut def.range(start - 1..def.pos).expect("Cannot unwind consumer to `{...}`"))?;
             return Ok(());
         }
         if let Some(content) = content.strip_suffix('*') {
@@ -1831,7 +1825,7 @@ impl SpecParser {
             return Err(eyre!("Invalid macro name `%-{flag}`"));
         }
         if flags.contains(&String::from(format!("{flag}"))) ^ notflag {
-            res.push_str(&expand);
+            res.push_str(expand);
         }
         Ok(())
     }
@@ -1866,7 +1860,7 @@ impl SpecParser {
                     macroname.push(ch);
                     def.read_before(&mut macroname, |ch| !ch.is_numeric());
                     let num: usize = macroname.parse().expect("Cannot parse numeric macroname");
-                    out.push_str(args.get(num - 1).map_or("", |s| &*s));
+                    out.push_str(args.get(num - 1).map_or("", |s| s));
                 },
                 ch => {
                     def.back(ch);
@@ -2076,6 +2070,7 @@ impl SpecParser {
     }
 }
 
+#[allow(clippy::unwrap_used)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2086,6 +2081,7 @@ mod tests {
     #[test]
     fn parse_spec() -> Result<()> {
         // tracing_subscriber::FmtSubscriber::builder().pretty().with_max_level(tracing::Level::TRACE).init();
+        // color_eyre::install()?;
         let f = File::open("./tests/test.spec")?;
         let f = BufReader::new(Box::new(f));
 
