@@ -42,4 +42,4 @@ pub use parse::RPMSpec;
 pub use rpmspec_common::{error, util};
 
 pub(crate) mod macrohelpers;
-pub(crate) use macrohelpers::*;
+pub(crate) use macrohelpers::preamble_maker;

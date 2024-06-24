@@ -175,5 +175,5 @@ macro_rules! gen_render_pop {
     };
 }
 
-pub(crate) use preamble_maker;
 pub(crate) use gen_render_pop;
+pub(crate) use preamble_maker;

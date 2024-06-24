@@ -336,7 +336,7 @@ impl RPMRequires {
     }
 }
 
-impl std::fmt::Display for RPMRequires {
+impl Display for RPMRequires {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         macro_rules! w {
 			($($attr:ident)*) => {
@@ -424,13 +424,13 @@ pub enum ConfigFileMod {
     NoReplace,
 }
 
-impl std::fmt::Display for ConfigFileMod {
+impl Display for ConfigFileMod {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("%config")?;
         let s = match self {
-            ConfigFileMod::None => return Ok(()),
-            ConfigFileMod::MissingOK => "missingok",
-            ConfigFileMod::NoReplace => "noreplace",
+            Self::None => return Ok(()),
+            Self::MissingOK => "missingok",
+            Self::NoReplace => "noreplace",
         };
         f.write_fmt(format_args!("({s})"))
     }
@@ -513,21 +513,21 @@ impl From<&str> for VerifyFileMod {
     }
 }
 
-impl std::fmt::Display for VerifyFileMod {
+impl Display for VerifyFileMod {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            VerifyFileMod::Owner => "owner",
-            VerifyFileMod::Group => "group",
-            VerifyFileMod::Mode => "mode",
-            VerifyFileMod::Md5 => "md5",
-            VerifyFileMod::Size => "size",
-            VerifyFileMod::Maj => "maj",
-            VerifyFileMod::Min => "min",
-            VerifyFileMod::Symlink => "symlink",
-            VerifyFileMod::Mtime => "mtime",
-            VerifyFileMod::Rdev => "rdev",
-            VerifyFileMod::None(x) => x,
-            VerifyFileMod::Not => "not",
+            Self::Owner => "owner",
+            Self::Group => "group",
+            Self::Mode => "mode",
+            Self::Md5 => "md5",
+            Self::Size => "size",
+            Self::Maj => "maj",
+            Self::Min => "min",
+            Self::Symlink => "symlink",
+            Self::Mtime => "mtime",
+            Self::Rdev => "rdev",
+            Self::None(x) => x,
+            Self::Not => "not",
         })
     }
 }
@@ -570,32 +570,30 @@ pub enum RPMFileAttr {
     Normal,
 }
 
-impl std::fmt::Display for RPMFileAttr {
+impl Display for RPMFileAttr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            RPMFileAttr::Artifact => "%artifact",
-            RPMFileAttr::Ghost => "%ghost",
-            RPMFileAttr::Config(cfg) => return cfg.fmt(f),
-            RPMFileAttr::Dir => "%dir",
-            RPMFileAttr::Doc => "%doc",
-            RPMFileAttr::License => "%license",
-            RPMFileAttr::Verify(mods) => {
+            Self::Artifact => "%artifact",
+            Self::Ghost => "%ghost",
+            Self::Config(cfg) => return cfg.fmt(f),
+            Self::Dir => "%dir",
+            Self::Doc => "%doc",
+            Self::License => "%license",
+            Self::Verify(mods) => {
                 f.write_str("%verify(")?;
                 let mut first = true;
-                mods.iter()
-                    .map(|m| {
-                        if first {
-                            first = false;
-                        } else {
-                            f.write_str(" ")?;
-                        }
-                        m.fmt(f)
-                    })
-                    .collect::<std::fmt::Result>()?;
+                mods.iter().try_for_each(|m| {
+                    if first {
+                        first = false;
+                    } else {
+                        f.write_str(" ")?;
+                    }
+                    m.fmt(f)
+                })?;
                 ")"
             },
-            RPMFileAttr::Docdir => "%docdir",
-            RPMFileAttr::Normal => return Ok(()),
+            Self::Docdir => "%docdir",
+            Self::Normal => return Ok(()),
         };
         f.write_str(s)
     }
@@ -728,7 +726,7 @@ impl RPMFiles {
     }
 }
 
-impl std::fmt::Display for RPMFiles {
+impl Display for RPMFiles {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if !self.incl.is_empty() {
             f.write_str(" -f ")?;
@@ -740,9 +738,9 @@ impl std::fmt::Display for RPMFiles {
             return Ok(());
         }
         for RPMFile { attr, path, mode, user, group, dmode } in self.files.iter() {
-            let mode: Box<dyn std::fmt::Display> = if *mode == 0 { Box::new(lzf!("-")) } else { Box::new(lzf!("{mode}")) };
-            let user: Box<dyn std::fmt::Display> = if user.is_empty() { Box::new(lzf!("-")) } else { Box::new(lzf!("{user}")) };
-            let group: Box<dyn std::fmt::Display> = if group.is_empty() { Box::new(lzf!("-")) } else { Box::new(lzf!("{group}")) };
+            let mode: Box<dyn Display> = if *mode == 0 { Box::new(lzf!("-")) } else { Box::new(lzf!("{mode}")) };
+            let user: Box<dyn Display> = if user.is_empty() { Box::new(lzf!("-")) } else { Box::new(lzf!("{user}")) };
+            let group: Box<dyn Display> = if group.is_empty() { Box::new(lzf!("-")) } else { Box::new(lzf!("{group}")) };
             if *dmode != 0 {
                 f.write_fmt(format_args!("%defattr({mode}, {user}, {group}, {dmode})\n"))?;
             } else {
