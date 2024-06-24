@@ -34,7 +34,6 @@
 #![allow(clippy::pattern_type_mismatch)]
 
 pub mod parse;
-#[macro_use]
 pub mod lua;
 pub mod macros;
 

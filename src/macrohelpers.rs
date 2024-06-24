@@ -146,7 +146,7 @@ macro_rules! gen_render_pop {
            	}};
            	($preamble:expr => ..$dollar(~$cur:ident.)?$attr:ident) => {{
           		if !render_pop!(@self $dollar($cur)?).$attr.is_empty() {
-         			render_pop!($preamble, &render_pop!(@self $dollar($cur)?).$attr.join(" "));
+         			render_pop!($preamble, &render_pop!(@self $dollar($cur)?).$attr.iter().map(|pkg| Box::new(lzf!("{pkg}"))).join(" "));
           		}
            	}};
            	($preamble:ident: $dollar($x:tt)*) => {

@@ -24,7 +24,7 @@ use tracing::{debug, trace, warn};
 
 const PKGNAMECHARSET: &str = "_-().";
 lazy_static::lazy_static! {
-    static ref RE_PQC:	Regex = Regex::new(r"(>=?|<=?|=)\s+(\d+:)?([\w\d.^]+)(-([\w\d.^]+))?(.*)").unwrap();
+    static ref RE_PQC:	Regex = Regex::new(r"^(>=?|<=?|=)\s+(\d+:)?([\w\d.^]+)(-([\w\d.^]+))?(.*)").unwrap();
     static ref RE_REQ:	Regex = Regex::new(r"(?m)^Requires(?:\(([\w,\s]+)\))?:\s*(.+)$").unwrap();
     static ref RE_FILE:	Regex = Regex::new(r"(?m)^(%\w+(\(.+\))?\s+)?(.+)$").unwrap();
     static ref RE_CLOG:	Regex = Regex::new(r"(?m)^\*[ \t]*((\w{3})[ \t]+(\w{3})[ \t]+(\d+)[ \t]+(\d+))[ \t]+(\S+)([ \t]+<([\w@.+]+)>)?([ \t]+-[ \t]+([\d.-^~_\w]+))?$((\n^[^*\n]*)+)").unwrap();
@@ -52,6 +52,24 @@ pub enum PkgQCond {
     Ge,
     /// >
     Gt,
+}
+
+impl std::borrow::Borrow<str> for PkgQCond {
+    fn borrow(&self) -> &str {
+        match self {
+            PkgQCond::Eq => "=",
+            PkgQCond::Le => "<=",
+            PkgQCond::Lt => "<",
+            PkgQCond::Ge => ">=",
+            PkgQCond::Gt => ">",
+        }
+    }
+}
+
+impl Display for PkgQCond {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(std::borrow::Borrow::borrow(self))
+    }
 }
 
 impl FromStr for PkgQCond {
@@ -96,9 +114,20 @@ pub struct Package {
     pub condition: PkgQCond,
 }
 
-impl std::borrow::Borrow<str> for Package {
-    fn borrow(&self) -> &str {
-        &self.name
+impl Display for Package {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)?;
+        if let Some(v) = &self.version {
+            f.write_fmt(format_args!(" {} ", self.condition))?;
+            if let Some(e) = self.epoch {
+                f.write_fmt(format_args!(":{e}-"))?;
+            }
+            f.write_fmt(format_args!("{v}"))?;
+            if let Some(r) = &self.release {
+                f.write_fmt(format_args!("-{r}"))?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -202,13 +231,14 @@ impl Package {
     /// use rpmspec::parse::{Package, PkgQCond};
     ///
     /// let mut pkgs = vec![];
-    /// let query = "hai, bai >= 3.0 another-pkg".into();
+    /// let query = "hai, foo bai >= 3.0 another-pkg".into();
     /// Package::add_query(&mut pkgs, query)?;
     ///
     /// let hai = Package::new("hai".into());
+    /// let foo = Package::new("foo".into());
     /// let bai = Package { name: "bai".into(), version: Some("3.0".into()), condition: PkgQCond::Ge, ..Default::default() };
     /// let another = Package::new("another-pkg".into());
-    /// assert_eq!(pkgs, vec![hai, bai, another]);
+    /// assert_eq!(pkgs, vec![hai, foo, bai, another]);
     /// # Ok::<(), color_eyre::Report>(())
     /// ```
     pub fn add_query(pkgs: &mut Vec<Self>, query: &str) -> Result<()> {
@@ -341,23 +371,25 @@ impl Display for RPMRequires {
         macro_rules! w {
 			($($attr:ident)*) => {
 				$({
-					let name = stringify!($attr);
-					if name == "none" {
-						f.write_str("Requires:       ")?;
-						f.write_str(&self.none.join(" "))?;
-						f.write_str("\n")?;
-					} else {
-						f.write_str("Requires(")?;
-						f.write_str(name)?;
-						f.write_str("):")?;
-						let mut padding = 5 - name.len();
-						while padding <= 0 {
-							padding += 4;
-						}
-						f.write_str(&" ".repeat(padding))?;
-						f.write_str(&self.$attr.join(" "))?;
-						f.write_str("\n")?;
-					}
+				    if !self.$attr.is_empty() {
+					    let name = stringify!($attr);
+					    if name == "none" {
+						    f.write_str("Requires:      ")?;
+				            self.none.iter().try_for_each(|pkg| f.write_fmt(format_args!(" {pkg}")))?;
+						    f.write_str("\n")?;
+					    } else {
+						    f.write_str("Requires(")?;
+						    f.write_str(name)?;
+						    f.write_str("):")?;
+						    let mut padding = 4 - name.len() as isize;
+						    while padding <= 0 {
+							    padding += 3;
+						    }
+						    f.write_str(&" ".repeat(padding as usize))?;
+				            self.$attr.iter().try_for_each(|pkg| f.write_fmt(format_args!(" {pkg}")))?;
+						    f.write_str("\n")?;
+					    }
+				    }
 				})*
 			}
 		}
@@ -1128,6 +1160,7 @@ impl RPMSpec {
         if self.changelog.raw.is_empty() {
             todo!()
         } else {
+            spec.push_str("\n\n%changelog\n");
             spec.push_str(&self.changelog.raw);
         }
 
@@ -2116,8 +2149,8 @@ mod tests {
         sp.load_macros()?;
         sp.macros.insert("nil".into(), vec!["".into()]); // FIXME
         sp.parse(f, &Arc::from(Path::new("./tests/test.spec")))?;
-        println!("Name: {}", sp.rpm.name.unwrap_or_default());
-        println!("Summary: {}", sp.rpm.summary.unwrap_or_default());
+        println!("{:#?}", sp.rpm);
+        println!("{}", sp.rpm.render());
         Ok(())
     }
 
