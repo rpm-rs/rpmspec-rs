@@ -9,6 +9,7 @@ use regex::Regex;
 use rpmspec_common::{opt, util::Brace, PErr as Err};
 use smartstring::alias::String;
 use std::env::consts::ARCH;
+use std::fmt::{Display, Write};
 use std::{
     collections::HashMap,
     io::{BufReader, Read},
@@ -423,6 +424,18 @@ pub enum ConfigFileMod {
     NoReplace,
 }
 
+impl std::fmt::Display for ConfigFileMod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("%config")?;
+        let s = match self {
+            ConfigFileMod::None => return Ok(()),
+            ConfigFileMod::MissingOK => "missingok",
+            ConfigFileMod::NoReplace => "noreplace",
+        };
+        f.write_fmt(format_args!("({s})"))
+    }
+}
+
 /// Settings for `%verify(...)` in `%files`.
 ///
 /// - [`VerifyFileMod::Owner`] : `%verify(user owner)`
@@ -500,6 +513,25 @@ impl From<&str> for VerifyFileMod {
     }
 }
 
+impl std::fmt::Display for VerifyFileMod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            VerifyFileMod::Owner => "owner",
+            VerifyFileMod::Group => "group",
+            VerifyFileMod::Mode => "mode",
+            VerifyFileMod::Md5 => "md5",
+            VerifyFileMod::Size => "size",
+            VerifyFileMod::Maj => "maj",
+            VerifyFileMod::Min => "min",
+            VerifyFileMod::Symlink => "symlink",
+            VerifyFileMod::Mtime => "mtime",
+            VerifyFileMod::Rdev => "rdev",
+            VerifyFileMod::None(x) => x,
+            VerifyFileMod::Not => "not",
+        })
+    }
+}
+
 /// File derivatives used in `%files`.
 ///
 /// - `RPMFileAttr::Artifact`
@@ -536,6 +568,37 @@ pub enum RPMFileAttr {
     /// Represents files without file derivatives
     #[default]
     Normal,
+}
+
+impl std::fmt::Display for RPMFileAttr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            RPMFileAttr::Artifact => "%artifact",
+            RPMFileAttr::Ghost => "%ghost",
+            RPMFileAttr::Config(cfg) => return cfg.fmt(f),
+            RPMFileAttr::Dir => "%dir",
+            RPMFileAttr::Doc => "%doc",
+            RPMFileAttr::License => "%license",
+            RPMFileAttr::Verify(mods) => {
+                f.write_str("%verify(")?;
+                let mut first = true;
+                mods.iter()
+                    .map(|m| {
+                        if first {
+                            first = false;
+                        } else {
+                            f.write_str(" ")?;
+                        }
+                        m.fmt(f)
+                    })
+                    .collect::<std::fmt::Result>()?;
+                ")"
+            },
+            RPMFileAttr::Docdir => "%docdir",
+            RPMFileAttr::Normal => return Ok(()),
+        };
+        f.write_str(s)
+    }
 }
 
 /// Represents a file in `%files`.
@@ -661,6 +724,37 @@ impl RPMFiles {
             })
             .filter(|x| x.as_ref().map_or(false, |x| x.path.is_empty()))
             .collect::<Result<Box<[RPMFile]>>>()?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for RPMFiles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if !self.incl.is_empty() {
+            f.write_str(" -f ")?;
+            f.write_str(&self.incl)?;
+        }
+        f.write_str("\n")?;
+        if !self.raw.is_empty() {
+            f.write_str(&self.raw)?;
+            return Ok(());
+        }
+        for RPMFile { attr, path, mode, user, group, dmode } in self.files.iter() {
+            let mode: Box<dyn std::fmt::Display> = if *mode == 0 { Box::new(lzf!("-")) } else { Box::new(lzf!("{mode}")) };
+            let user: Box<dyn std::fmt::Display> = if user.is_empty() { Box::new(lzf!("-")) } else { Box::new(lzf!("{user}")) };
+            let group: Box<dyn std::fmt::Display> = if group.is_empty() { Box::new(lzf!("-")) } else { Box::new(lzf!("{group}")) };
+            if *dmode != 0 {
+                f.write_fmt(format_args!("%defattr({mode}, {user}, {group}, {dmode})\n"))?;
+            } else {
+                f.write_fmt(format_args!("%attr({mode}, {user}, {group})"))?;
+            }
+            if let RPMFileAttr::Normal = attr {
+                f.write_str(path)?;
+            } else {
+                f.write_fmt(format_args!("{attr} {path}"))?;
+            }
+            f.write_str("\n")?;
+        }
         Ok(())
     }
 }
@@ -796,7 +890,7 @@ type Pkgs = Vec<Package>;
 type SimplePkgs = Vec<Package>;
 type Strings = Vec<String>;
 
-crate::preamble_maker! {
+crate::macrohelpers::preamble_maker! {
     /// Represents a subpackage (`%package ...`).
     #[derive(Default, Clone, Debug, PartialEq, Eq)]
     RPMSpecPkg {
@@ -951,82 +1045,30 @@ impl RPMSpec {
     #[must_use]
     pub fn render(&self) -> String {
         let mut spec = String::new();
+        crate::macrohelpers::gen_render_pop!($spec self);
 
-        macro_rules! pop {
-			(@self) => {self};
-			(@self $a:ident) => {$a};
-			($preamble:expr, $val:expr) => {{
-				let preamble = $preamble;
-				let padding = 14 - preamble.len();
-				spec.push_str(preamble);
-				spec.push(':');
-				spec.push_str(&" ".repeat(padding));
-				spec.push_str($val);
-				spec.push('\n');
-			}};
-			($preamble:expr => $(~$cur:ident.)?$attr:ident) => {{
-				if let Some(val) = &pop!(@self $($cur)?).$attr {
-					pop!($preamble, val);
-				}
-			}};
-			($preamble:expr => $(~$cur:ident.)?$attr:ident or $default:expr) => {{
-				pop!($preamble, pop!(@self $($cur)?).$attr.as_ref().map_or($default, |s| s));
-			}};
-			($preamble:expr => ..$(~$cur:ident.)?$attr:ident) => {{
-				if !pop!(@self $($cur)?).$attr.is_empty() {
-					pop!($preamble, &pop!(@self $($cur)?).$attr.join(" "));
-				}
-			}};
-			($preamble:ident: $($x:tt)*) => {
-				pop!(stringify!($preamble) => $($x)*);
-			};
-			($preamble:expr => $b:block) => {{
-				pop!($preamble, $b);
-			}};
-			(@use) => { "" };
-			(@use $subpackage:expr, $header:expr) => { $header:expr };
-			(@in $scriptlets:ident $(for $header:expr)?) => {
-				pop!(%(pre post preun postun pretrans posttrans verify triggerprein triggerin triggerun triggerpostun filetriggerin filetriggerun filetriggerpostun transfiletriggerin transfiletriggerun transfiletriggerpostun) in $scriptlets $(for $header)?);
-			};
-			(@header) => { "" };
-			(@header $header:expr) => { format!(" {}", $header) };
-			(%($($section:ident)*) in $scriptlets:ident $(for $header:expr)?) => {
-				// we need this because rust doesn't support macro nesting with $()? inside $()*
-				let header = pop!(@header $($header)?);
-				$(
-					if let Some(s) = &$scriptlets.$section {
-						spec.push_str("\n\n%");
-						spec.push_str(stringify!($section));
-						spec.push_str(&header);
-						spec.push('\n');
-						spec.push_str(s);
-					}
-				)*
-			};
-		}
-
-        pop!(Name: name or "pkgname");
-        pop!(Version: version or "1.0.0");
-        pop!(Release: release or "1%?dist");
-        pop!(Summary: summary or "Missing summary");
-        pop!(Epoch: { &self.epoch.to_string() });
-        pop!(Vendor: vendor);
-        pop!(URL: url);
-        pop!(Copyright: copyright);
-        pop!(Packager: packager);
-        pop!(Group: group);
+        render_pop!(Name: name or "pkgname");
+        render_pop!(Version: version or "1.0.0");
+        render_pop!(Release: release or "1%?dist");
+        render_pop!(Summary: summary or "Missing summary");
+        render_pop!(Epoch: { &self.epoch.to_string() });
+        render_pop!(Vendor: vendor);
+        render_pop!(URL: url);
+        render_pop!(Copyright: copyright);
+        render_pop!(Packager: packager);
+        render_pop!(Group: group);
         // Icon:
-        pop!(License: license);
-        pop!(BuildArch: ..buildarch);
-        pop!(ExclusiveArch: ..exclusivearch);
-        pop!(ExclusiveOS: ..exclusiveos);
-        pop!(BuildRequires: ..buildrequires);
-        pop!(Obsoletes: ..obsoletes);
-        pop!(Conflicts: ..conflicts);
-        pop!(Provides: ..provides);
-        self.patches.iter().for_each(|(i, p)| pop!(&format!("Patch{i}") => { p }));
-        self.sources.iter().for_each(|(i, p)| pop!(&format!("Source{i}") => { p }));
-        spec.push_str(&format!("{}", self.requires));
+        render_pop!(License: license);
+        render_pop!(BuildArch: ..buildarch);
+        render_pop!(ExclusiveArch: ..exclusivearch);
+        render_pop!(ExclusiveOS: ..exclusiveos);
+        render_pop!(BuildRequires: ..buildrequires);
+        render_pop!(Obsoletes: ..obsoletes);
+        render_pop!(Conflicts: ..conflicts);
+        render_pop!(Provides: ..provides);
+        self.patches.iter().for_each(|(i, p)| render_pop!(&format!("Patch{i}") => { p }));
+        self.sources.iter().for_each(|(i, p)| render_pop!(&format!("Source{i}") => { p }));
+        write!(spec, "{}", self.requires).unwrap();
 
         spec.push_str("\n\n%description\n");
         spec.push_str(if self.description.is_empty() { "%{summary}." } else { &self.description });
@@ -1040,67 +1082,50 @@ impl RPMSpec {
                 header.push_str("-n ");
                 header.push_str(name);
             }
-            spec.push_str(&header);
-            spec.push('\n');
+            writeln!(spec, "{header}").unwrap();
 
             if current.summary.is_some() {
-                pop!(Summary: { &current.summary.as_deref().unwrap_or("") });
+                render_pop!(Summary: { &current.summary.as_deref().unwrap_or("") });
             }
-            pop!(Group: ~current.group);
-            pop!(Provides: ..~current.provides);
-            pop!(Conflicts: ..~current.conflicts);
-            pop!(Obsoletes: ..~current.obsoletes);
-            pop!(Recommends: ..~current.recommends);
-            pop!(Suggests: ..~current.suggests);
-            pop!(Supplements: ..~current.supplements);
-            pop!(Enhances: ..~current.enhances);
-            spec.push_str(&format!("{}", current.requires));
+            render_pop!(Group: ~current.group);
+            render_pop!(Provides: ..~current.provides);
+            render_pop!(Conflicts: ..~current.conflicts);
+            render_pop!(Obsoletes: ..~current.obsoletes);
+            render_pop!(Recommends: ..~current.recommends);
+            render_pop!(Suggests: ..~current.suggests);
+            render_pop!(Supplements: ..~current.supplements);
+            render_pop!(Enhances: ..~current.enhances);
+            write!(spec, "{}", current.requires).unwrap();
 
-            spec.push_str("\n\n%description ");
-            spec.push_str(&header);
-            spec.push('\n');
+            writeln!(spec, "\n\n%description {header}").unwrap();
             spec.push_str(if current.description.is_empty() { "%{summary}." } else { &current.description });
 
             header
         });
         let headers: Box<[_]> = headers.collect();
 
-        // %prep
-        spec.push_str("\n\n%prep\n");
-        spec.push_str(&self.prep);
-
-        spec.push_str("\n\n%build\n");
-        spec.push_str(&self.build);
-
-        spec.push_str("\n\n%install\n");
-        spec.push_str(&self.install);
+        write!(spec, "\n\n%prep\n{}\n\n%build\n{}\n\n%install\n{}", self.prep, self.build, self.install).unwrap();
 
         if !self.check.is_empty() {
             spec.push_str("\n\n%check\n");
             spec.push_str(&self.check);
         }
 
-        let scriptlets = &self.scriptlets;
-        pop!(@in scriptlets);
+        // to reduce cognitive complexity
+        let mut render_scriptlets = || {
+            let scriptlets = &self.scriptlets;
+            render_pop!(@in scriptlets);
+        };
+        render_scriptlets();
 
         self.packages.iter().zip(headers.iter()).for_each(|((_, current), header)| {
             let scriptlets = &current.scriptlets;
-            pop!(@in scriptlets for header);
+            render_pop!(@in scriptlets for header);
         });
 
         // todo: macros
 
-        spec.push_str("\n\n%files");
-        if !self.files.incl.is_empty() {
-            spec.push_str(" -f ");
-            spec.push_str(&self.files.incl);
-        }
-        spec.push('\n');
-        if self.files.raw.is_empty() {
-            todo!()
-        } else {
-            spec.push_str(&self.files.raw);
-        }
+        write!(spec, "\n\n%files{}", self.files).unwrap();
 
         if self.changelog.raw.is_empty() {
             todo!()
@@ -1362,7 +1387,7 @@ impl SpecParser {
     }
 
     /// Handles conditions as if they are sections, like `%if` and `%elifarch`, etc.
-    /// 
+    ///
     /// # Errors
     /// Fails if there are parsing failures / macro evaluation failures
     pub fn _handle_conditions(&mut self, start: &str, remain: &str) -> Result<bool> {
@@ -1486,72 +1511,76 @@ impl SpecParser {
                 }
             }),
             "package" if remain.is_empty() => return Err(eyre!("Expected arguments to %package: {start:?} / {remain:?}")),
-            "package" => {
-                let mut remaincsm = consumer.range(remainpos..consumer.pos).expect("Cannot unwind Consumer");
-                let (_, mut args, flags) = self._param_macro_args(&mut remaincsm).map_err(|e| e.wrap_err("Cannot parse arguments to %package"))?;
-                if let Some(x) = flags.iter().find(|x| **x != "n") {
-                    return Err(eyre!("Unexpected %package flag `-{x}`"));
-                }
-                let [arg] = args.as_mut_slice() else {
-                    return Err(eyre!("Expected 1, found {} arguments (excluding flags) to %package", args.len()));
-                };
-                let name = if flags.is_empty() { format!("{}-{arg}", self.rpm.name.as_ref().ok_or(eyre!("Expected package name before subpackage `{arg}`"))?).into() } else { take(arg) };
-                if self.rpm.packages.contains_key(&name) {
-                    return Err(eyre!("The subpackage {name} has already been declared"));
-                }
-                self.rpm.packages.insert(name.clone(), RPMSpecPkg::default());
-                RPMSection::Package(name)
-            },
+            "package" => self._hdl_section_package(consumer, remainpos)?,
             "prep" => RPMSection::Prep,
             "build" => RPMSection::Build,
             "install" => RPMSection::Install,
-            "files" => {
-                let (mut f, mut name, mut remains) = (None, String::new(), remain.split(' '));
-                while let Some(remain) = remains.next() {
-                    if remain.is_empty() {
-                        break; // idk why this happens?
-                    }
-                    if let Some(flag) = remain.strip_prefix('-') {
-                        match flag {
-                            "f" => {
-                                let Some(next) = remains.next() else {
-                                    return Err(eyre!("Expected argument for %files after `-f`"));
-                                };
-                                if next.starts_with('-') {
-                                    return Err(eyre!("Expected argument for %files after `-f`, found flag `{next}`"));
-                                }
-                                if let Some(old) = f {
-                                    return Err(eyre!("Unexpected duplicated `-f`").note(format!("Old: {old}")).note(format!("New: {next}")));
-                                }
-                                f = Some(next.into());
-                            },
-                            "n" => {
-                                let Some(next) = remains.next() else {
-                                    return Err(eyre!("Expected argument for %files after `-n`"));
-                                };
-                                if next.starts_with('-') {
-                                    return Err(eyre!("Expected argument for %files after `-n`, found flag `{next}`"));
-                                }
-                                if !name.is_empty() {
-                                    return Err(eyre!("The name of the subpackage is already set.").note(format!("Old: {name}")).note(format!("New: {next}")));
-                                }
-                                name = next.into();
-                            },
-                            _ => return Err(eyre!("Unexpected flag `-{flag}` for %files")),
-                        }
-                    } else {
-                        if !name.is_empty() {
-                            return Err(eyre!("The name of the subpackage is already set.").note(format!("Old: {name}")).note(format!("New: {remain}")));
-                        }
-                        name = format!("{}-{remain}", self.rpm.name.as_ref().ok_or(eyre!("Expected package name before subpackage `{remain}`"))?).into();
-                    }
-                }
-                RPMSection::Files(name, f)
-            },
+            "files" => self._hdl_section_files(&remain)?,
             "changelog" => RPMSection::Changelog,
             _ => return Ok(false),
         };
         Ok(true)
+    }
+
+    fn _hdl_section_files(&mut self, remain: &str) -> Result<RPMSection> {
+        let (mut f, mut name, mut remains) = (None, String::new(), remain.split(' '));
+        while let Some(remain) = remains.next() {
+            if remain.is_empty() {
+                break; // idk why this happens?
+            }
+            if let Some(flag) = remain.strip_prefix('-') {
+                match flag {
+                    "f" => {
+                        let Some(next) = remains.next() else {
+                            return Err(eyre!("Expected argument for %files after `-f`"));
+                        };
+                        if next.starts_with('-') {
+                            return Err(eyre!("Expected argument for %files after `-f`, found flag `{next}`"));
+                        }
+                        if let Some(old) = f {
+                            return Err(eyre!("Unexpected duplicated `-f`").note(format!("Old: {old}")).note(format!("New: {next}")));
+                        }
+                        f = Some(next.into());
+                    },
+                    "n" => {
+                        let Some(next) = remains.next() else {
+                            return Err(eyre!("Expected argument for %files after `-n`"));
+                        };
+                        if next.starts_with('-') {
+                            return Err(eyre!("Expected argument for %files after `-n`, found flag `{next}`"));
+                        }
+                        if !name.is_empty() {
+                            return Err(eyre!("The name of the subpackage is already set.").note(format!("Old: {name}")).note(format!("New: {next}")));
+                        }
+                        name = next.into();
+                    },
+                    _ => return Err(eyre!("Unexpected flag `-{flag}` for %files")),
+                }
+            } else {
+                if !name.is_empty() {
+                    return Err(eyre!("The name of the subpackage is already set.").note(format!("Old: {name}")).note(format!("New: {remain}")));
+                }
+                name = format!("{}-{remain}", self.rpm.name.as_ref().ok_or(eyre!("Expected package name before subpackage `{remain}`"))?).into();
+            }
+        }
+        Ok(RPMSection::Files(name, f))
+    }
+
+    fn _hdl_section_package(&mut self, consumer: &mut Consumer<impl Read>, remainpos: usize) -> Result<RPMSection, color_eyre::eyre::Error> {
+        let mut remaincsm = consumer.range(remainpos..consumer.pos).expect("Cannot unwind Consumer");
+        let (_, mut args, flags) = self._param_macro_args(&mut remaincsm).map_err(|e| e.wrap_err("Cannot parse arguments to %package"))?;
+        if let Some(x) = flags.iter().find(|x| **x != "n") {
+            return Err(eyre!("Unexpected %package flag `-{x}`"));
+        }
+        let [arg] = args.as_mut_slice() else {
+            return Err(eyre!("Expected 1, found {} arguments (excluding flags) to %package", args.len()));
+        };
+        let name = if flags.is_empty() { format!("{}-{arg}", self.rpm.name.as_ref().ok_or(eyre!("Expected package name before subpackage `{arg}`"))?).into() } else { take(arg) };
+        if self.rpm.packages.contains_key(&name) {
+            return Err(eyre!("The subpackage {name} has already been declared"));
+        }
+        self.rpm.packages.insert(name.clone(), RPMSpecPkg::default());
+        Ok(RPMSection::Package(name))
     }
 
     /// Parses the spec file given as a [`io::BufReader`].

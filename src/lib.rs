@@ -18,6 +18,7 @@
 #![warn(clippy::perf)]
 #![warn(clippy::style)]
 #![warn(clippy::suspicious)]
+#![allow(clippy::equatable_if_let)]
 // followings are from clippy::restriction
 #![warn(clippy::missing_errors_doc)]
 #![warn(clippy::missing_panics_doc)]
@@ -26,6 +27,7 @@
 #![warn(clippy::expect_used)]
 #![warn(clippy::format_push_string)]
 #![warn(clippy::get_unwrap)]
+#![warn(clippy::format_push_string)]
 #![allow(clippy::missing_inline_in_public_items)]
 #![allow(clippy::implicit_return)]
 #![allow(clippy::blanket_clippy_restriction_lints)]
@@ -35,7 +37,9 @@ pub mod parse;
 #[macro_use]
 pub mod lua;
 pub mod macros;
-mod preamblemaker;
 
 pub use parse::RPMSpec;
 pub use rpmspec_common::{error, util};
+
+pub(crate) mod macrohelpers;
+pub(crate) use macrohelpers::*;
