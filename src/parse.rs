@@ -6,6 +6,7 @@ use itertools::Itertools;
 use lazy_format::lazy_format as lzf;
 use parking_lot::RwLock;
 use regex::Regex;
+use rpmspec_common::util::handle_line_skip;
 use rpmspec_common::{opt, util::Brace, PErr as Err};
 use smartstring::alias::String;
 use std::env::consts::ARCH;
@@ -1205,6 +1206,35 @@ impl SpecParser {
         Ok(())
     }
 
+    /// [`Self::parse_macro()`] but for macro definitions.
+    ///
+    /// # Errors
+    /// - Fail to parse macros (probably invalid syntax)
+    pub fn parse_macro_defs<R: Read>(&mut self, out: &mut String, reader: &mut Consumer<R>) -> Result<(), Err> {
+        let mut line_end_buf = String::new();
+        while let Some(ch) = reader.next() {
+            if ch == '\n' {
+                out.push('\n');
+                line_end_buf.clear();
+                continue;
+            }
+            if ch.is_whitespace() || ch == '\\' {
+                line_end_buf.push(ch);
+                continue;
+            }
+            if !line_end_buf.is_empty() {
+                out.push_str(&line_end_buf);
+                line_end_buf.clear();
+            }
+            if ch != '%' {
+                out.push(ch);
+                continue;
+            }
+            self._start_parse_raw_macro(out, reader)?;
+        }
+        Ok(())
+    }
+
     /// Parses an `%[expression]`.
     ///
     /// # Errors
@@ -1521,7 +1551,7 @@ impl SpecParser {
         }
         let start = start.to_string();
         if let Some((left, right)) = remain.split_once('\n') {
-            *l = right.into();
+            *l = handle_line_skip(right.chars());
             remain = left.into();
         }
         self.section = match &start[1..] {
@@ -1634,7 +1664,7 @@ impl SpecParser {
             if rawlineguard.is_empty() {
                 break;
             }
-            let mut rawline = String::from(&*rawlineguard);
+            let mut rawline = handle_line_skip(rawlineguard.chars());
             drop(rawlineguard);
             let older_pos = old_pos;
             old_pos = consumer.pos;
@@ -1903,7 +1933,19 @@ impl SpecParser {
             };
         }
 
+        let mut spacebuf = String::new();
         while let Some(ch) = def.next() {
+            if ch == '\n' {
+                spacebuf.clear();
+                out.push(' ');
+                continue;
+            }
+            if ch.is_whitespace() || ch == '\\' {
+                spacebuf.push(ch);
+                continue;
+            }
+            out.push_str(&spacebuf);
+            spacebuf.clear();
             if ch != '%' {
                 out.push(ch);
                 continue;
@@ -1948,7 +1990,7 @@ impl SpecParser {
                 if *param {
                     return self._param_macro(name, &mut csm, reader, out).map_err(Into::into);
                 }
-                self.parse_macro(out, &mut csm).map_err(Into::into)
+                self.parse_macro_defs(out, &mut csm).map_err(Into::into)
             },
             MacroType::Internal(f) => {
                 // * What is this gigantic mess??

@@ -316,3 +316,24 @@ impl<R: Read> From<&str> for Consumer<R> {
         Self::new(Arc::from(RwLock::new(s.into())), None, Arc::from(Path::new("<?>")))
     }
 }
+
+pub fn handle_line_skip(s: std::str::Chars) -> String {
+    let mut out = String::new();
+    let mut line_end_buf = String::new();
+    for c in s {
+        if c == '\n' {
+            line_end_buf.clear();
+            continue;
+        }
+        if c.is_whitespace() || c == '\\' {
+            line_end_buf.push(c);
+            continue;
+        }
+        if !line_end_buf.is_empty() {
+            out.push_str(&line_end_buf);
+            line_end_buf.clear();
+        }
+        out.push(c);
+    }
+    out
+}

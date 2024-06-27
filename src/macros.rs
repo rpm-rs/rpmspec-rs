@@ -5,6 +5,7 @@ use crate::{parse::SpecParser, util::Consumer};
 use color_eyre::eyre::eyre;
 use itertools::Itertools;
 use parking_lot::RwLock;
+use rpmspec_common::util::handle_line_skip;
 use rpmspec_common::PErr as PE;
 use smartstring::alias::String;
 use std::collections::HashMap;
@@ -74,7 +75,7 @@ __internal_macros!(
     macro define(p, _, r) {
         r.until(|ch| !ch.is_whitespace());
         let pos = r.pos;
-        let def = r.read_til_eot()?.to_string();
+        let def = handle_line_skip(r.read_til_eot()?.chars());
         let def = def.trim_start();
         #[rustfmt::skip]
         let Some((name, _)) = def.split_once(' ') else {
