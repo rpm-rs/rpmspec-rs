@@ -131,7 +131,7 @@ __internal_macros!(
         let content = content.lines().map(|line| line.trim_end().trim_end_matches('\\')).join("\n");
         let parser = Arc::new(RwLock::new(std::mem::take(p)));
         let out = crate::lua::run(&parser, &content)?;
-        std::mem::swap(p, &mut Arc::try_unwrap(parser).expect("Cannot unwrap Arc for print() output in lua").into_inner()); // break down Arc then break down RwLock
+        std::mem::swap(p, &mut Arc::try_unwrap(parser).expect("cannot unwrap Arc rpmparser in %lua").into_inner());
         o.push_str(&out);
         Ok(())
     }
