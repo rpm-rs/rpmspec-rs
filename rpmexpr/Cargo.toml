@@ -13,7 +13,7 @@ license = "MIT"
 
 [dependencies]
 chumsky = "0.9.2"
-color-eyre = "0.6.2"
+# color-eyre = "0.6.2"
 parking_lot = "0.12.1"
 rpmspec-common = { path = "../rpmspec-common" }
 smartstring = "1.0.1"

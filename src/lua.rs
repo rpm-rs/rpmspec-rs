@@ -19,6 +19,7 @@ use std::{
     str::FromStr,
     sync::Arc,
 };
+use rpmspec_common::ParseResult;
 
 #[derive(Default)]
 enum RpmFileIOType {
@@ -208,7 +209,7 @@ macro_rules! __lua {
                 )+
             }
         )+
-        pub(crate) fn run(rpmparser: &Arc<RwLock<SpecParser>>, script: &str) -> color_eyre::Result<String> {
+        pub(crate) fn run(rpmparser: &Arc<RwLock<SpecParser>>, script: &str) -> ParseResult<String> {
             let lua = Lua::new();
             let printout = Arc::new(RwLock::new(String::new()));
             {
@@ -229,7 +230,7 @@ macro_rules! __lua {
                         Ok(())
                     })?,
                 )?;
-                lua.load(script).exec().map_err(|e| color_eyre::eyre::eyre!("Cannot execute script: {script}").wrap_err(e))?;
+                lua.load(script).exec().map_err(|e| format!("Cannot execute script: {script}").into())?;
             }
             drop(lua);
             Ok(Arc::try_unwrap(printout).expect("Cannot unwrap Arc for print() output in lua").into_inner())

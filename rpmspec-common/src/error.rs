@@ -1,6 +1,8 @@
 //! [`ParserError`] used in rpmspec-rs.
 //! Yes. You heard me. The only error is [`ParserError`] and everything else is
 //! unfortunately String.
+use std::num::ParseIntError;
+
 use crate::expr::Expression;
 use chumsky::prelude::Simple;
 use smartstring::alias::String;
@@ -33,26 +35,45 @@ pub enum ParseErr {
     BadExpression(ExprErr),
     /// A color_eyre::Report. Some sort of syntax error.
     #[error("{0:#}")]
-    Others(color_eyre::Report),
+    Others(String),
+    
+    /// A Lua error
+    #[error("Lua error: {0}")]
+    LuaError(#[from] mlua::Error),
+    
+    // #[error("IO error: {0}")]
+    // IoError(#[from] std::io::Error),
 }
 
-impl From<color_eyre::Report> for ParseErr {
-    fn from(value: color_eyre::Report) -> Self {
-        Self::Others(value)
+impl From<&str> for ParseErr {
+    fn from(value: &str) -> Self {
+        Self::Others(value.into())
     }
 }
 
-impl From<mlua::Error> for ParseErr {
-    fn from(value: mlua::Error) -> Self {
-        Self::Others(color_eyre::eyre::eyre!(value))
+impl From<std::string::String> for ParseErr {
+    fn from(value: std::string::String) -> Self {
+        Self::Others(value.into())
     }
 }
 
-impl From<std::io::Error> for ParseErr {
-    fn from(value: std::io::Error) -> Self {
-        Self::Others(color_eyre::eyre::eyre!(value))
-    }
-}
+// impl From<color_eyre::Report> for ParseErr {
+//     fn from(value: color_eyre::Report) -> Self {
+//         Self::Others(value)
+//     }
+// }
+
+// impl From<mlua::Error> for ParseErr {
+//     fn from(value: mlua::Error) -> Self {
+//         Self::Others(color_eyre::eyre::eyre!(value))
+//     }
+// }
+
+// impl From<std::io::Error> for ParseErr {
+//     fn from(value: std::io::Error) -> Self {
+//         Self::Others(color_eyre::eyre::eyre!(value))
+//     }
+// }
 
 impl From<ExprErr> for ParseErr {
     fn from(value: ExprErr) -> Self {
@@ -76,9 +97,14 @@ impl Clone for ParseErr {
             Self::MacroNotFound(m) => Self::MacroNotFound(m.clone()),
             Self::MacroUndefined(m) => Self::MacroUndefined(m.clone()),
             Self::BadExpression(e) => Self::BadExpression(e.clone()),
+            /*
+            cannot move out of a shared reference
+            move occurs because value has type `std::io::Error`, which does not implement the `Copy` trait            */
+            // Self::IoError(e) => Self::IoError(e),
+            Self::LuaError(e) => Self::LuaError(e.clone()),
             Self::Others(r) => {
                 tracing::warn!("Cloning ParserError::Others(color_eyre::Report):\n{r:#}");
-                Self::Others(color_eyre::eyre::eyre!(r.to_string()))
+                Self::Others(r.clone())
             },
         }
     }
@@ -105,6 +131,12 @@ pub enum ExprErr {
     /// Error when parsing %[] from Chumsky
     #[error("Cannot parse expression: {0:?}")]
     BadExprParse(Box<[Simple<char>]>),
+    
+    #[error("Error: {0}")]
+    Others(String),
+    
+    #[error("Cannot parse epoch: {0}")]
+    EpochParse(ParseIntError),
 }
 
 impl From<ParseErr> for ExprErr {
@@ -113,14 +145,27 @@ impl From<ParseErr> for ExprErr {
     }
 }
 
-impl From<Vec<Simple<char>>> for ExprErr {
-    fn from(value: Vec<Simple<char>>) -> Self {
-        Self::BadExprParse(value.into_boxed_slice())
+impl From<&str> for ExprErr {
+    fn from(value: &str) -> Self {
+        Self::Others(value.into())
+    }
+}
+// impl from any asref string
+
+impl From<String> for ExprErr {
+    fn from(value: String) -> Self {
+        Self::Others(value)
     }
 }
 
-impl From<color_eyre::Report> for ExprErr {
-    fn from(value: color_eyre::Report) -> Self {
-        Self::from(ParseErr::from(value))
+impl From<std::string::String> for ExprErr {
+    fn from(value: std::string::String) -> Self {
+        Self::Others(value.into())
+    }
+}
+
+impl From<Vec<Simple<char>>> for ExprErr {
+    fn from(value: Vec<Simple<char>>) -> Self {
+        Self::BadExprParse(value.into_boxed_slice())
     }
 }

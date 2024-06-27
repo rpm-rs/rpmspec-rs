@@ -1,12 +1,13 @@
 //! Parser for rpmspec. See [`SpecParser`].
 use crate::macros::MacroType;
 use crate::util::Consumer;
-use color_eyre::{eyre::eyre, Help, Result, SectionExt};
+// use color_eyre::{eyre::eyre, Help, Result, SectionExt};
 use itertools::Itertools;
 use lazy_format::lazy_format as lzf;
 use parking_lot::RwLock;
 use regex::Regex;
 use rpmspec_common::util::handle_line_skip;
+use rpmspec_common::ParseResult;
 use rpmspec_common::{opt, util::Brace, PErr as Err};
 use smartstring::alias::String;
 use std::env::consts::ARCH;
@@ -164,7 +165,7 @@ impl Package {
     /// # Errors
     /// An error is returned if and only if there exists an invalid character that is
     /// not ascii-alphanumeric and not in [`PKGNAMECHARSET`].
-    pub fn add_simple_query(pkgs: &mut Vec<Self>, query: &str) -> Result<()> {
+    pub fn add_simple_query(pkgs: &mut Vec<Self>, query: &str) -> ParseResult<()> {
         let mut last = String::new();
         let mut quotes = vec![];
         let chrs = query.trim().chars();
@@ -189,8 +190,8 @@ impl Package {
             } else if let Some(brace) = Brace::close_ch(ch) {
                 match quotes.pop() {
                     Some(q) if q == brace => {},
-                    Some(q) => return Err(eyre!("Expected {q:?}, found `{ch}` ({brace:?})")),
-                    None => return Err(eyre!("Unexpected closing brace `{ch}` ({brace:?})")),
+                    Some(q) => return Err(format!("Expected {q:?}, found `{ch}` ({brace:?})")),
+                    None => return Err(format!("Unexpected closing brace `{ch}` ({brace:?})")),
                 }
             }
             last.push(ch);
