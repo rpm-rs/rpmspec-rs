@@ -1341,7 +1341,7 @@ impl SpecParser {
         Ok(true)
     }
 
-    /// Loads all macros defined in a file.
+    /// Load and parse all macros defined in a macro definition file.
     ///
     /// # Errors
     /// - [`io::Error`] when it fails open/read the file

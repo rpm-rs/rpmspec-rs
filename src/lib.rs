@@ -9,6 +9,7 @@
 //! defined in the spec files and various other files in the macros directory.
 //! They are also picked up from ~/.rpmrc and /etc/rpmrc.
 //!
+//! To get started, see [`SpecParser::parse()`].
 #![warn(clippy::disallowed_types)]
 #![warn(missing_docs)]
 #![warn(clippy::complexity)]
@@ -33,11 +34,11 @@
 #![allow(clippy::blanket_clippy_restriction_lints)]
 #![allow(clippy::pattern_type_mismatch)]
 
-pub mod parse;
 pub mod lua;
 pub mod macros;
+pub mod parse;
 
-pub use parse::RPMSpec;
+pub use parse::{RPMSpec, SpecParser};
 pub use rpmspec_common::{error, util};
 
 pub(crate) mod macrohelpers;
