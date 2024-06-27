@@ -1695,7 +1695,7 @@ impl SpecParser {
                     } else if ["Source", "Patch"].contains(&&cap[1]) {
                         self.add_list_preamble(&cap[1], 0, &cap[2])?;
                     } else {
-                        let offset = consumer.pos - cap[2].len();
+                        let offset = consumer.pos - cap[2].len() - 1;
                         self.add_preamble(&cap[1], cap[2].into(), offset, &mut consumer)?;
                     }
                 },
@@ -2191,6 +2191,7 @@ mod tests {
         sp.load_macros()?;
         sp.macros.insert("nil".into(), vec!["".into()]); // FIXME
         sp.parse(f, &Arc::from(Path::new("./tests/test.spec")))?;
+        println!("{:?}", sp.macros.get("summary"));
         println!("{:#?}", sp.rpm);
         println!("{}", sp.rpm.render());
         Ok(())
