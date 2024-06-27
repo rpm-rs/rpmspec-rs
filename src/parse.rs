@@ -6,9 +6,12 @@ use itertools::Itertools;
 use lazy_format::lazy_format as lzf;
 use parking_lot::RwLock;
 use regex::Regex;
-use rpmspec_common::util::handle_line_skip;
-use rpmspec_common::ParseResult;
-use rpmspec_common::{opt, util::Brace, PErr as Err};
+use rpmspec_common::{
+    error::SpecErr,
+    opt,
+    util::{handle_line_skip, Brace},
+    PErr as Err, ParseResult,
+};
 use smartstring::alias::String;
 use std::env::consts::ARCH;
 use std::fmt::{Display, Write};
@@ -172,7 +175,11 @@ impl Package {
         for ch in chrs {
             if ch == ' ' || ch == ',' {
                 if !quotes.is_empty() {
-                    return Err(eyre!("Unclosed quotes: `{quotes:?}`").note(format!("Reading query `{query}`")).note(lzf!("Parsing `{last}`")).note(lzf!("Deliminator `{ch}`")));
+                    return Err(Err::InvalidSyntax {
+                        span: todo!(),
+                        err: SpecErr::UnclosedBraces { quotes },
+                        notes: vec![(todo!(), Box::new(format!("Reading query {query}"))), (todo!(), Box::new(lzf!("Parsing {last}"))), (todo!(), Box::new(lzf!("Deliminator {ch}")))],
+                    });
                 }
                 if !last.is_empty() {
                     pkgs.push(Self::new(take(&mut last)));
@@ -180,24 +187,38 @@ impl Package {
                 continue;
             }
             if !ch.is_ascii_alphanumeric() && !PKGNAMECHARSET.contains(ch) {
-                return Err(eyre!("Invalid character `{ch}` in package name")
-                    .note(format!("Reading query `{query}`"))
-                    .note(lzf!("Parsing `{last}`"))
-                    .suggestion(lzf!("Only ascii alphanumeric characters and `{PKGNAMECHARSET}` are valid")));
+                return Err(Err::InvalidSyntax {
+                    span: todo!(),
+                    err: SpecErr::InvalidPackageName { name: last, offending: Some(ch) },
+                    notes: vec![
+                        (todo!(), Box::new(lzf!("Invalid character `{ch}` in package name"))),
+                        (todo!(), Box::new(format!("Reading query `{query}`"))),
+                        (todo!(), Box::new(lzf!("Parsing `{last}`"))),
+                        (todo!(), Box::new(lzf!("Only ascii alphanumeric characters and `{PKGNAMECHARSET}` are valid"))), // Hint
+                    ],
+                });
             }
             if let Some(brace) = Brace::open_ch(ch) {
                 quotes.push(brace);
             } else if let Some(brace) = Brace::close_ch(ch) {
                 match quotes.pop() {
                     Some(q) if q == brace => {},
-                    Some(q) => return Err(format!("Expected {q:?}, found `{ch}` ({brace:?})")),
-                    None => return Err(format!("Unexpected closing brace `{ch}` ({brace:?})")),
+                    Some(expected) => return Err(Err::InvalidSyntax { span: todo!(), err: SpecErr::UnmatchedBrace { expected, found: brace }, notes: vec![] }),
+                    None => return Err(Err::InvalidSyntax { span: todo!(), err: SpecErr::UnexpectedClosingBrace(brace), notes: vec![] }),
                 }
             }
             last.push(ch);
         }
         if !quotes.is_empty() {
-            return Err(eyre!("Unclosed quotes: `{quotes:?}`").note(format!("Reading query `{query}`")).note(lzf!("Parsing `{last}`")).warning("Unexpected EOL"));
+            return Err(Err::InvalidSyntax {
+                span: todo!(),
+                err: SpecErr::UnclosedBraces { quotes },
+                notes: vec![
+                    (todo!(), Box::new(format!("Reading query `{query}`"))),
+                    (todo!(), Box::new(lzf!("Parsing {last}"))),
+                    (todo!(), Box::new(lzf!("Unexpected EOL/EOF"))), // Warn
+                ],
+            });
         }
         if !last.is_empty() {
             pkgs.push(Self::new(last));
@@ -243,7 +264,7 @@ impl Package {
     /// assert_eq!(pkgs, vec![hai, foo, bai, another]);
     /// # Ok::<(), color_eyre::Report>(())
     /// ```
-    pub fn add_query(pkgs: &mut Vec<Self>, query: &str) -> Result<()> {
+    pub fn add_query(pkgs: &mut Vec<Self>, query: &str) -> ParseResult<()> {
         let query = query.trim(); // just in case
         if query.is_empty() {
             return Ok(());
@@ -268,10 +289,15 @@ impl Package {
                 break;
             }
             if !ch.is_ascii_alphanumeric() && !PKGNAMECHARSET.contains(ch) {
-                return Err(eyre!("Invalid character `{ch}` in package name")
-                    .note(format!("Reading query `{query}`"))
-                    .note(lzf!("Parsing `{name}`"))
-                    .suggestion(lzf!("Only ascii alphanumeric characters and `{PKGNAMECHARSET}` are valid")));
+                return Err(Err::InvalidSyntax {
+                    span: todo!(),
+                    err: SpecErr::InvalidPackageName { name: name.clone(), offending: Some(ch) },
+                    notes: vec![(todo!(), Box::new(format!("Reading query {query}"))), (todo!(), Box::new(lzf!("Parsing {name}")))],
+                });
+                // return Err(eyre!("Invalid character `{ch}` in package name")
+                //     .note(format!("Reading query `{query}`"))
+                //     .note(lzf!("Parsing `{name}`"))
+                //     .suggestion(lzf!("Only ascii alphanumeric characters and `{PKGNAMECHARSET}` are valid")));
             }
             name.push(ch);
         }
@@ -301,7 +327,7 @@ impl Package {
         pkg.condition = PkgQCond::from_str(&caps[1])?;
         if let Some(epoch) = caps.get(2) {
             let epoch = epoch.as_str().strip_suffix(':').expect("epoch no `:` by RE_PKGQCOND");
-            pkg.epoch = Some(epoch.parse().map_err(|e| eyre!("Cannot parse epoch to u32: `{epoch}`").error(e).suggestion("Epoch can only be positive integers"))?);
+            pkg.epoch = Some(epoch.parse().map_err(|err| Err::InvalidSyntax { span: todo!(), err: SpecErr::InvalidPackageEpoch { epoch: epoch.into(), err }, notes: vec![] })?);
         }
         pkg.version = Some(caps[3].into());
         if let Some(rel) = caps.get(5) {
@@ -665,7 +691,7 @@ pub struct RPMFiles {
 
 impl RPMFiles {
     /// Parses a `%files` section using `self.raw`.
-    fn parse(&mut self) -> Result<()> {
+    fn parse(&mut self) -> ParseResult<()> {
         //? http://ftp.rpm.org/max-rpm/s1-rpm-inside-files-list-directives.html
         let mut defattr = (0, "".into(), "".into(), 0);
         self.files = RE_FILE
@@ -673,19 +699,35 @@ impl RPMFiles {
             .map(|cap| {
                 if let Some(remain) = &cap[0].strip_prefix("%defattr(") {
                     let Some(remain) = remain.trim_end().strip_suffix(')') else {
-                        return Err(eyre!("Closing `)` not found for `%defattr(`"));
+                        return Err(Err::InvalidSyntax { span: todo!(), err: SpecErr::UnclosedBraces { quotes: vec![Brace::Round] }, notes: vec![(todo!(), Box::new("While parsing %defattr(..."))] });
                     };
                     let ss: Box<[&str]> = remain.split(',').map(str::trim).collect();
                     let [filemode, user, group, dirmode] = match *ss {
                         [filemode, user, group] => [filemode, user, group, ""],
                         [filemode, user, group, dmode] => [filemode, user, group, dmode],
-                        _ => return Err(eyre!("Expected 3/4 arguments for %defattr(), found {}", ss.len())),
+                        _ => return Err(Err::InvalidSyntax { span: todo!(), err: SpecErr::BadArgCount { expected: [3, 4], found: ss.len() }, notes: vec![] }),
                     };
                     defattr = (
-                        if filemode == "-" { 0 } else { filemode.parse().map_err(|e: ParseIntError| eyre!(e).wrap_err("Cannot parse file mode"))? },
+                        if filemode == "-" {
+                            0
+                        } else {
+                            filemode.parse().map_err(|err| Err::InvalidSyntax {
+                                span: todo!(),
+                                err: SpecErr::BadMode { mode: filemode.into(), err },
+                                notes: vec![(todo!(), Box::new("While parsing %defattr")), (todo!(), Box::new("While parsing file mode"))],
+                            })?
+                        },
                         (if user == "-" { "" } else { user }).into(),
                         (if group == "-" { "" } else { group }).into(),
-                        if dirmode == "-" { 0 } else { dirmode.parse().map_err(|e: ParseIntError| eyre!(e).wrap_err("Cannot parse dir mode"))? },
+                        if dirmode == "-" {
+                            0
+                        } else {
+                            dirmode.parse().map_err(|err| Err::InvalidSyntax {
+                                span: todo!(),
+                                err: SpecErr::BadMode { mode: dirmode.into(), err },
+                                notes: vec![(todo!(), Box::new("While parsing %defattr")), (todo!(), Box::new("While parsing dir mode"))],
+                            })?
+                        },
                     );
                     return Ok(RPMFile::default());
                 }
@@ -698,11 +740,19 @@ impl RPMFiles {
                         if name.starts_with("%attr(") {
                             let ss: Vec<&str> = x.split(',').map(str::trim).collect();
                             let Some([fmode, user, group]) = ss.get(0..=2) else {
-                                return Err(eyre!("Expected 3 arguments in `%attr(...)`"));
+                                return Err(Err::InvalidSyntax {
+                                    span: todo!(),
+                                    err: SpecErr::BadArgCount { expected: &[3], found: ss.len() },
+                                    notes: vec![(todo!(), Box::new("While parsing %attr(...)"))],
+                                });
                             };
                             let (fmode, user, group) = (*fmode, *user, *group);
                             if fmode != "-" {
-                                f.mode = fmode.parse().map_err(|e: ParseIntError| eyre!(e).wrap_err("Cannot parse file mode"))?;
+                                f.mode = fmode.parse().map_err(|err| Err::InvalidSyntax {
+                                    span: todo!(),
+                                    err: SpecErr::BadMode { mode: fmode.into(), err },
+                                    notes: vec![(todo!(), Box::new("While parsing %defattr")), (todo!(), Box::new("While parsing file mode"))],
+                                })?;
                             }
                             if user != "-" {
                                 f.user = user.into();
@@ -715,8 +765,8 @@ impl RPMFiles {
                         }
                         if name.starts_with("%verify(") {
                             let mut vs = x.split(' ').map_into().collect_vec();
-                            if let Some(VerifyFileMod::None(s)) = vs.iter().find(|s| matches!(s, VerifyFileMod::None(_))) {
-                                return Err(eyre!("`%verify({s})` is unknown"));
+                            if let Some(VerifyFileMod::None(modifier)) = vs.iter().find(|s| matches!(s, VerifyFileMod::None(_))) {
+                                return Err(Err::InvalidSyntax { span: todo!(), err: SpecErr::BadModifier { modifier, id: "%verify" }, notes: vec![] });
                             }
                             if vs.contains(&VerifyFileMod::Not) {
                                 let mut ll = VerifyFileMod::all();
@@ -878,7 +928,7 @@ impl Changelogs {
     ///
     /// # Errors
     /// - [`chrono::ParseError`] if any dates cannot be parsed.
-    pub fn parse(&mut self) -> Result<()> {
+    pub fn parse(&mut self) -> ParseResult<()> {
         self.changelogs = RE_CLOG
             .captures_iter(&self.raw)
             .map(|cap| {
@@ -1196,7 +1246,7 @@ impl SpecParser {
     ///
     /// # Errors
     /// - Fail to parse macros (probably invalid syntax)
-    pub fn parse_macro<R: Read>(&mut self, out: &mut String, reader: &mut Consumer<R>) -> Result<(), Err> {
+    pub fn parse_macro<R: Read>(&mut self, out: &mut String, reader: &mut Consumer<R>) -> ParseResult<(), Err> {
         while let Some(ch) = reader.next() {
             if ch != '%' {
                 out.push(ch);
@@ -1211,7 +1261,7 @@ impl SpecParser {
     ///
     /// # Errors
     /// - Fail to parse macros (probably invalid syntax)
-    pub fn parse_macro_defs<R: Read>(&mut self, out: &mut String, reader: &mut Consumer<R>) -> Result<(), Err> {
+    pub fn parse_macro_defs<R: Read>(&mut self, out: &mut String, reader: &mut Consumer<R>) -> ParseResult<(), Err> {
         let mut line_end_buf = String::new();
         while let Some(ch) = reader.next() {
             if ch == '\n' {
@@ -1241,7 +1291,7 @@ impl SpecParser {
     /// # Errors
     /// - Invalid syntax in expression
     /// - Cannot evaluate expression
-    pub fn parse_expr(&mut self, out: &mut String, reader: &mut Consumer<impl Read>) -> Result<(), Err> {
+    pub fn parse_expr(&mut self, out: &mut String, reader: &mut Consumer<impl Read>) -> ParseResult<(), Err> {
         use chumsky::Parser;
 
         // FIXME: it is not an exact replica of rpm: they do not parse the macros in the expression
@@ -1314,7 +1364,7 @@ impl SpecParser {
     ///
     /// # Panics
     /// - [`RPMSection::Package`] specified in `parser.section` doesn't exists in `rpm.packages`
-    pub fn parse_requires(&mut self, sline: &str) -> Result<bool> {
+    pub fn parse_requires(&mut self, sline: &str) -> ParseResult<bool> {
         let Some(caps) = RE_REQ.captures(sline) else {
             return Ok(false);
         };
@@ -1348,7 +1398,7 @@ impl SpecParser {
     /// - [`io::Error`] when it fails open/read the file
     /// - [`core::str::Utf8Error`] when the file content cannot be converted into `&str`
     #[tracing::instrument(skip(self))]
-    pub fn load_macro_from_file(&mut self, path: &Path) -> Result<()> {
+    pub fn load_macro_from_file(&mut self, path: &Path) -> ParseResult<()> {
         debug!(path=?path.display(), "Loading macros from file");
         let mut csm = Consumer { r: Some(Arc::new(RwLock::new(BufReader::new(Box::new(std::fs::File::open(path)?))))), file: Arc::from(path), ..Default::default() };
         while let Some(ch) = csm.next() {
@@ -1409,7 +1459,7 @@ impl SpecParser {
     /// Not sure where I've seen the docs, but there was one lying around saying you can define multiple
     /// macros with the same name, and when you undefine it the old one recovers (stack?). I don't think
     /// it is a good idea to do it like that (it is simply ridiculous and inefficient) but you can try.
-    pub fn load_macros(&mut self) -> Result<()> {
+    pub fn load_macros(&mut self) -> ParseResult<()> {
         // run rpm --showrc | grep "^Macro path"
         let binding = Command::new("sh").args(["-c", "rpm --showrc|grep '^Macro path'|sed 's/Macro path: //'"]).output()?;
         let binding = core::str::from_utf8(&binding.stdout)?;
@@ -1434,7 +1484,7 @@ impl SpecParser {
         Ok(())
     }
 
-    fn _load_macros_in_dir(&mut self, dir: &Path) -> Result<()> {
+    fn _load_macros_in_dir(&mut self, dir: &Path) -> ParseResult<()> {
         for path in std::fs::read_dir(dir)? {
             let path = path?;
             if path.metadata()?.is_dir() {
@@ -1452,7 +1502,7 @@ impl SpecParser {
     ///
     /// # Errors
     /// Fails if there are parsing failures / macro evaluation failures
-    pub fn _handle_conditions(&mut self, start: &str, remain: &str) -> Result<bool> {
+    pub fn _handle_conditions(&mut self, start: &str, remain: &str) -> ParseResult<bool> {
         // TODO: parse using RPM expressions
         match start {
             "if" => {
@@ -1525,7 +1575,7 @@ impl SpecParser {
     ///
     /// # Panics
     /// - Cannot unwind Consumer (cannot read something that has been read)
-    pub fn _handle_section(&mut self, l: &mut String, consumer: &mut Consumer<impl Read>) -> Result<bool> {
+    pub fn _handle_section(&mut self, l: &mut String, consumer: &mut Consumer<impl Read>) -> ParseResult<bool> {
         // FIXME: optimizations?
         let (start, _) = l.split_once(|ch: char| ch.is_whitespace()).unwrap_or((l.trim(), ""));
         if !(start.starts_with('%') && start.chars().nth(1) != Some('%')) {
@@ -1584,7 +1634,7 @@ impl SpecParser {
         Ok(true)
     }
 
-    fn _hdl_section_files(&mut self, remain: &str) -> Result<RPMSection> {
+    fn _hdl_section_files(&mut self, remain: &str) -> ParseResult<RPMSection> {
         let (mut f, mut name, mut remains) = (None, String::new(), remain.split(' '));
         while let Some(remain) = remains.next() {
             if remain.is_empty() {
@@ -1628,7 +1678,7 @@ impl SpecParser {
         Ok(RPMSection::Files(name, f))
     }
 
-    fn _hdl_section_package(&mut self, consumer: &mut Consumer<impl Read>, remainpos: usize) -> Result<RPMSection, color_eyre::eyre::Error> {
+    fn _hdl_section_package(&mut self, consumer: &mut Consumer<impl Read>, remainpos: usize) -> ParseResult<RPMSection, color_eyre::eyre::Error> {
         let mut remaincsm = consumer.range(remainpos..consumer.pos).expect("Cannot unwind Consumer");
         let (_, mut args, flags) = self._param_macro_args(&mut remaincsm).map_err(|e| e.wrap_err("Cannot parse arguments to %package"))?;
         if let Some(x) = flags.iter().find(|x| **x != "n") {
@@ -1656,7 +1706,7 @@ impl SpecParser {
     /// # Panics
     /// - The function expects a subpackage to be previously defined and created in
     ///   `self.rpm.packages` and would panic if it was not found. This'd be a bug.
-    pub fn parse<R: Read>(&mut self, bufread: BufReader<Box<R>>, path: &Arc<Path>) -> Result<()> {
+    pub fn parse<R: Read>(&mut self, bufread: BufReader<Box<R>>, path: &Arc<Path>) -> ParseResult<()> {
         let mut consumer: Consumer<R> = Consumer::new(Arc::default(), Some(Arc::new(bufread.into())), Arc::clone(path));
         let mut old_pos = 0;
         loop {
@@ -1773,7 +1823,7 @@ impl SpecParser {
     ///
     /// # Errors
     /// - The preamble is unknown / invalid
-    pub fn add_list_preamble(&mut self, name: &str, digit: u32, value: &str) -> Result<()> {
+    pub fn add_list_preamble(&mut self, name: &str, digit: u32, value: &str) -> ParseResult<()> {
         let rpm = &mut self.rpm;
         macro_rules! no_override_ins {
             ($attr:ident) => {{
@@ -1811,7 +1861,7 @@ impl SpecParser {
     /// - `DocDir`
     /// - `RemovePathPostfixes`
     #[tracing::instrument(skip(self, csm))]
-    pub fn add_preamble(&mut self, name: &str, value: String, offset: usize, csm: &mut Consumer<impl Read>) -> Result<()> {
+    pub fn add_preamble(&mut self, name: &str, value: String, offset: usize, csm: &mut Consumer<impl Read>) -> ParseResult<()> {
         preamble_parser!(self name value offset csm)
     }
 
@@ -1820,7 +1870,7 @@ impl SpecParser {
     // This fn assumes that `reader` has a finite scope confined to the arguments in question and nothing more.
     // The scope in concern shall be obtained from [`Consumer.skip_til_eot()`].
     #[tracing::instrument(skip(self, reader))]
-    fn _param_macro_args(&mut self, reader: &mut Consumer<impl Read>) -> Result<(String, Vec<String>, Vec<String>)> {
+    fn _param_macro_args(&mut self, reader: &mut Consumer<impl Read>) -> ParseResult<(String, Vec<String>, Vec<String>)> {
         // flags aren't necessarily 1 char: e.g. `%autosetup -p1`
         let (mut content, mut flags) = (String::new(), vec![]);
         // we start AFTER %macro_name
@@ -1878,7 +1928,7 @@ impl SpecParser {
     }
 
     #[tracing::instrument(skip(self, def))]
-    fn __paramm_inner(&mut self, def: &mut Consumer<impl Read>, raw_args: &str, flags: &[String], res: &mut String) -> Result<()> {
+    fn __paramm_inner(&mut self, def: &mut Consumer<impl Read>, raw_args: &str, flags: &[String], res: &mut String) -> ParseResult<()> {
         let start = def.pos;
         let content = def.read_before_endbrace(Brace::Curly)?;
 
@@ -1922,7 +1972,7 @@ impl SpecParser {
     }
 
     #[tracing::instrument(skip(self, def, reader))]
-    fn _param_macro(&mut self, name: &str, def: &mut Consumer<impl Read>, reader: &mut Consumer<impl Read>, out: &mut String) -> Result<()> {
+    fn _param_macro(&mut self, name: &str, def: &mut Consumer<impl Read>, reader: &mut Consumer<impl Read>, out: &mut String) -> ParseResult<()> {
         let (raw_args, args, flags) = self._param_macro_args(reader)?;
         macro_rules! next {
             () => {
@@ -1975,7 +2025,7 @@ impl SpecParser {
         Ok(())
     }
 
-    pub(crate) fn _find_macro_and_expand<R: Read>(&mut self, name: &str, reader: &mut Consumer<R>, out: &mut String) -> Result<(), Err> {
+    pub(crate) fn _find_macro_and_expand<R: Read>(&mut self, name: &str, reader: &mut Consumer<R>, out: &mut String) -> ParseResult<(), Err> {
         debug!("getting %{name}");
         let Some(def) = self.macros.get(name) else {
             return Err(Err::MacroNotFound(name.into()));
@@ -2030,7 +2080,7 @@ impl SpecParser {
         }
     }
 
-    fn __rawm_shellexpand(strout: &mut String, chars: &mut Consumer<impl Read>) -> Result<()> {
+    fn __rawm_shellexpand(strout: &mut String, chars: &mut Consumer<impl Read>) -> ParseResult<()> {
         let shellcmd = chars.read_before_endbrace(Brace::Round)?;
         Err(match Command::new("sh").arg("-c").arg(&*shellcmd).output() {
             Ok(out) if out.status.success() => {
@@ -2050,7 +2100,7 @@ impl SpecParser {
     ///
     /// when %a is undefined, %{!a} expands to %{!a}, but %!a expands to %a.
     #[tracing::instrument(skip(self, reader))]
-    fn _macro_expand_flagproc<R: std::io::Read>(&mut self, qus: bool, notflag: bool, reader: &mut Consumer<R>, name: &str, out: &mut String, curly: bool) -> Result<()> {
+    fn _macro_expand_flagproc<R: std::io::Read>(&mut self, qus: bool, notflag: bool, reader: &mut Consumer<R>, name: &str, out: &mut String, curly: bool) -> ParseResult<()> {
         let mut buf = String::new();
         let res = self._find_macro_and_expand(name, reader, &mut buf);
         // we still need to process the macro even if we know it expands to nothing
@@ -2085,7 +2135,7 @@ impl SpecParser {
     /// Parse the stuff after %, and determines `{[()]}`.
     /// FIXME: please REFACTOR me!!
     #[tracing::instrument(skip(self, chars))]
-    pub fn _start_parse_raw_macro<R: Read>(&mut self, out: &mut String, chars: &mut Consumer<R>) -> Result<(), Err> {
+    pub fn _start_parse_raw_macro<R: Read>(&mut self, out: &mut String, chars: &mut Consumer<R>) -> ParseResult<(), Err> {
         let (mut notflag, mut question, mut first) = (false, false, true);
         let mut macroname = String::new();
         loop {
@@ -2182,7 +2232,7 @@ mod tests {
     type RR = std::fs::File;
 
     #[test]
-    fn parse_spec() -> Result<()> {
+    fn parse_spec() -> ParseResult<()> {
         // tracing_subscriber::FmtSubscriber::builder().pretty().with_max_level(tracing::Level::TRACE).init();
         // color_eyre::install()?;
         let f = File::open("./tests/test.spec")?;
@@ -2198,7 +2248,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_macros() -> Result<()> {
+    fn test_load_macros() -> ParseResult<()> {
         // tracing_subscriber::FmtSubscriber::builder().pretty().with_max_level(tracing::Level::TRACE).init();
         let mut sp = SpecParser::new();
         sp.load_macros()?;
@@ -2207,7 +2257,7 @@ mod tests {
     }
 
     #[test]
-    fn simple_macro_expand() -> Result<()> {
+    fn simple_macro_expand() -> ParseResult<()> {
         let mut parser = super::SpecParser::new();
         parser.macros.insert("macrohai".into(), vec!["hai hai".into()]);
         let mut out = String::new();
@@ -2217,7 +2267,7 @@ mod tests {
     }
 
     #[test]
-    fn text_recursive_macro_expand() -> Result<()> {
+    fn text_recursive_macro_expand() -> ParseResult<()> {
         let mut parser = super::SpecParser::new();
         parser.macros.insert("mhai".into(), vec!["hai hai".into()]);
         parser.macros.insert("quadhai".into(), vec!["%mhai %{mhai}".into()]);
@@ -2228,7 +2278,7 @@ mod tests {
     }
 
     #[test]
-    fn text_quoting_recursive_macro_expand() -> Result<()> {
+    fn text_quoting_recursive_macro_expand() -> ParseResult<()> {
         let mut parser = super::SpecParser::new();
         parser.macros.insert("mhai".into(), vec!["hai hai".into()]);
         parser.macros.insert("idk".into(), vec!["%!?mhai %?!mhai %{mhai}".into()]);
@@ -2241,7 +2291,7 @@ mod tests {
     }
 
     #[test]
-    fn shell_macro_expand() -> Result<()> {
+    fn shell_macro_expand() -> ParseResult<()> {
         let mut parser = super::SpecParser::new();
         parser.macros.insert("x".into(), vec!["%(echo haai | sed 's/a/aa/g')".into()]);
         let mut out = String::new();
@@ -2260,7 +2310,7 @@ mod tests {
     }
 
     #[test]
-    fn presence_macro_expand() -> Result<()> {
+    fn presence_macro_expand() -> ParseResult<()> {
         let mut parser = super::SpecParser::new();
         parser.macros.insert("x".into(), vec!["%{?not_exist:hai}%{!?not_exist:bai}".into()]);
         let mut out = String::new();
@@ -2274,7 +2324,7 @@ mod tests {
     }
 
     #[test]
-    fn param_macro_args_parsing() -> Result<()> {
+    fn param_macro_args_parsing() -> ParseResult<()> {
         let mut parser = super::SpecParser::new();
         assert_eq!(
             parser._param_macro_args(&mut Consumer::<RR>::from("-a hai -b asdfsdklj \\  \n abcd\ne"))?,

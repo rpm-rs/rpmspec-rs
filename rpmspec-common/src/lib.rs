@@ -5,5 +5,6 @@ pub mod util;
 pub use error::ExprErr;
 pub use error::ParseErr as PErr;
 
-pub type ParseResult<T> = Result<T, PErr>;
-pub type ExprResult<T> = Result<T, ExprErr>;
+// pub type ParseResult<T> = Result<T, PErr>;
+// pub type ExprResult<T> = Result<T, ExprErr>;
+pub use error::{ParseResult, ExprResult};

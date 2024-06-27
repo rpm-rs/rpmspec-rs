@@ -27,6 +27,16 @@ pub enum Brace {
     Round,
 }
 
+impl std::fmt::Display for Brace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Curly => "`{curly}`",
+            Self::Square => "`[square]`",
+            Self::Round => "`(round)`",
+        })
+    }
+}
+
 impl Brace {
     pub fn open_ch(ch: char) -> Option<Self> {
         Some(match ch {

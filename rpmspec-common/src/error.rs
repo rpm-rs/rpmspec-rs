@@ -1,17 +1,119 @@
 //! [`ParserError`] used in rpmspec-rs.
 //! Yes. You heard me. The only error is [`ParserError`] and everything else is
 //! unfortunately String.
-use std::num::ParseIntError;
+use std::{fmt::Display, num::ParseIntError, path::Path, sync::Arc};
 
-use crate::expr::Expression;
+use crate::{expr::Expression, util::Brace};
 use chumsky::prelude::Simple;
 use smartstring::alias::String;
 use thiserror::Error;
+
+pub type ParseResult<T> = Result<T, ParseErr>;
+pub type ExprResult<T> = Result<T, ExprErr>;
+
+/// Spec Syntax Errors and whatnot
+#[derive(Debug, Error)]
+pub enum SpecErr {
+    #[error("Unclosed quotes: {quotes:?}")]
+    UnclosedBraces { quotes: Vec<Brace> },
+    #[error("Unmatched quote: expected `{expected}`, found `{found}`")]
+    UnmatchedBrace { expected: Brace, found: Brace },
+    #[error("Unexpected closing brace: {0}")]
+    UnexpectedClosingBrace(Brace),
+    #[error("Invalid package name: {name}")]
+    InvalidPackageName { name: String, offending: Option<char> },
+    #[error("Invalid package version: {version}")]
+    InvalidPackageVersion { version: String, offending: Option<String> },
+    #[error("Invalid package release: {release}")]
+    InvalidPackageRelease { release: String, offending: Option<String> },
+    #[error("Invalid package epoch: `{epoch}`; Epoch can only be positive integers")]
+    InvalidPackageEpoch { epoch: String, err: ParseIntError },
+    #[error("Invalid package architecture: {arch}")]
+    InvalidPackageArch { arch: String, offending: Option<String> },
+
+    #[error("Invalid expression: {0}")]
+    InvalidExpression(#[from] ExprErr),
+
+    #[error("Wrong number of arguments: expected one of {expected:?}, found {found}")]
+    BadArgCount { expected: &'static [usize], found: usize },
+    #[error("Bad mode: `{mode}`; expected integer")]
+    BadMode { mode: String, err: ParseIntError },
+    #[error("Bad modifier `{modifier}` for `{id}(...)`")]
+    BadModifier { modifier: String, id: &'static str },
+}
+
+/// Position information (byte offset)
+#[derive(Debug)]
+pub struct Span {
+    filename: Option<Arc<Path>>,
+    start: usize, // TODO: figure out if we should store this as byte offset?
+    end: usize,
+    kind: SpanType,
+}
+
+impl Span {
+    // let's implement fuctions to specify span data maybe
+    /// Set the starting point (byte offset) of the span
+    pub fn start(&mut self, start: usize) -> &mut Self {
+        self.start = start;
+        self
+    }
+
+    /// Set the ending  point (byte offset) of the span
+    pub fn end(&mut self, end: usize) -> &mut Self {
+        self.end = end;
+        self
+    }
+}
+
+impl Display for Span {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // let filename: Box<dyn Display> = self.filename.map_or(Box::new("<unknown>"), |f| Box::new(f.display()));
+        // let Self { line_start, col_start, .. } = self;
+        // f.write_fmt(format_args!("{filename}:{line_start}:{col_start}"))
+        todo!()
+    }
+}
+
+#[derive(Debug)]
+pub enum SpanType {
+    Err,
+    Warn,
+    Note,
+    Hint,
+}
+
+impl Display for SpanType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Err => "Error",
+            Self::Warn => "Warn",
+            Self::Note => "Note",
+            Self::Hint => "Hint",
+        })
+    }
+}
+
+pub trait DisplayDebug: Display + std::fmt::Debug {}
+
+impl<T: Display + std::fmt::Debug> DisplayDebug for T {}
 
 /// Errors for some special parsing issues
 #[derive(Debug, Error)]
 #[allow(clippy::module_name_repetitions)]
 pub enum ParseErr {
+    /// Bad RPM Expression (`%[]`)
+    #[error("Bad RPM Expression: {0:?}")]
+    Expr(#[from] ExprErr),
+
+    /// Invalid spec syntax
+    #[error("Invalid RPM Spec Syntax: {err} (at {span})")]
+    InvalidSyntax {
+        span: Span, // probably todo?
+        err: SpecErr,
+        notes: Vec<(Span, Box<dyn DisplayDebug>)>,
+    },
+
     /// The preamble specified is invalid.
     #[error("Preamble not supported")]
     UnknownPreamble(usize, String),
@@ -33,14 +135,13 @@ pub enum ParseErr {
     /// Bad Expresssion `%[]`
     #[error("Bad RPM Expression: {0:#?}")]
     BadExpression(ExprErr),
-    /// A color_eyre::Report. Some sort of syntax error.
-    #[error("{0:#}")]
+    #[error("{0:?}")]
+    #[deprecated = "Please implement a specific error type!!"]
     Others(String),
-    
+
     /// A Lua error
     #[error("Lua error: {0}")]
     LuaError(#[from] mlua::Error),
-    
     // #[error("IO error: {0}")]
     // IoError(#[from] std::io::Error),
 }
@@ -54,30 +155,6 @@ impl From<&str> for ParseErr {
 impl From<std::string::String> for ParseErr {
     fn from(value: std::string::String) -> Self {
         Self::Others(value.into())
-    }
-}
-
-// impl From<color_eyre::Report> for ParseErr {
-//     fn from(value: color_eyre::Report) -> Self {
-//         Self::Others(value)
-//     }
-// }
-
-// impl From<mlua::Error> for ParseErr {
-//     fn from(value: mlua::Error) -> Self {
-//         Self::Others(color_eyre::eyre::eyre!(value))
-//     }
-// }
-
-// impl From<std::io::Error> for ParseErr {
-//     fn from(value: std::io::Error) -> Self {
-//         Self::Others(color_eyre::eyre::eyre!(value))
-//     }
-// }
-
-impl From<ExprErr> for ParseErr {
-    fn from(value: ExprErr) -> Self {
-        Self::BadExpression(value)
     }
 }
 
@@ -106,6 +183,7 @@ impl Clone for ParseErr {
                 tracing::warn!("Cloning ParserError::Others(color_eyre::Report):\n{r:#}");
                 Self::Others(r.clone())
             },
+            _ => unimplemented!(),
         }
     }
 }
@@ -131,10 +209,10 @@ pub enum ExprErr {
     /// Error when parsing %[] from Chumsky
     #[error("Cannot parse expression: {0:?}")]
     BadExprParse(Box<[Simple<char>]>),
-    
+
     #[error("Error: {0}")]
     Others(String),
-    
+
     #[error("Cannot parse epoch: {0}")]
     EpochParse(ParseIntError),
 }
