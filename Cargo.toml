@@ -2,7 +2,7 @@
 name = "rpmspec"
 description = "An RPM spec file parser"
 version = "0.4.0"
-authors = ["Fyra Labs <contact@fyralabs.com>"]
+authors = ["Fyra Labs <contact@fyralabs.com>", "madonuko <mado@fyralabs.com>"]
 readme = "README.md"
 repository = "https://github.com/rpm-rs/rpmspec-rs"
 keywords = ["rpmspec", "rpm", "packaging"]

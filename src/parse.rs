@@ -1392,7 +1392,7 @@ impl SpecParser {
         Ok(true)
     }
 
-    /// Loads all macros defined in a file.
+    /// Load and parse all macros defined in a macro definition file.
     ///
     /// # Errors
     /// - [`io::Error`] when it fails open/read the file
@@ -1432,7 +1432,11 @@ impl SpecParser {
                 csm.skip_til_eot()?; // eot is end of definition
                 trace!(pos = csm.pos, "finished parsing macro definition");
                 trace!(?name, "Insert macro");
-                let m = MacroType::Runtime { file: Arc::clone(&csm.file), s: Arc::clone(&csm.s), param, offset, len: csm.pos - offset };
+                let len = csm.pos - offset - 1;
+                //              ^^^^^^^  (start)   ┬
+                //               (end)             │
+                // we also need to remove the new line char
+                let m = MacroType::Runtime { file: Arc::clone(&csm.file), s: Arc::clone(&csm.s), param, offset, len };
                 if let Some(v) = self.macros.get_mut(&name) {
                     v.push(m);
                     continue;
@@ -1460,12 +1464,11 @@ impl SpecParser {
     /// macros with the same name, and when you undefine it the old one recovers (stack?). I don't think
     /// it is a good idea to do it like that (it is simply ridiculous and inefficient) but you can try.
     pub fn load_macros(&mut self) -> ParseResult<()> {
-        // run rpm --showrc | grep "^Macro path"
+        // TODO: don't use rpm because that's cheating
         let binding = Command::new("sh").args(["-c", "rpm --showrc|grep '^Macro path'|sed 's/Macro path: //'"]).output()?;
         let binding = core::str::from_utf8(&binding.stdout)?;
         let paths = binding.trim().split(':');
 
-        // TODO: use Consumer::read_til_EOL() instead
         for path in paths {
             let path = path.replace("%{_target}", ARCH);
             debug!(": {path}");
@@ -1746,7 +1749,7 @@ impl SpecParser {
                     } else if ["Source", "Patch"].contains(&&cap[1]) {
                         self.add_list_preamble(&cap[1], 0, &cap[2])?;
                     } else {
-                        let offset = consumer.pos - cap[2].len();
+                        let offset = consumer.pos - cap[2].len() - 1;
                         self.add_preamble(&cap[1], cap[2].into(), offset, &mut consumer)?;
                     }
                 },
