@@ -8,7 +8,7 @@ use parking_lot::RwLock;
 use regex::Regex;
 use rpmspec_common::{
     error::SpecErr,
-    opt,
+    opt, syntaxerr,
     util::{handle_line_skip, Brace},
     PErr as Err, ParseResult,
 };
@@ -19,7 +19,6 @@ use std::{
     collections::HashMap,
     io::{BufReader, Read},
     mem::take,
-    num::ParseIntError,
     path::Path,
     process::Command,
     str::FromStr,
@@ -169,6 +168,7 @@ impl Package {
     /// An error is returned if and only if there exists an invalid character that is
     /// not ascii-alphanumeric and not in [`PKGNAMECHARSET`].
     pub fn add_simple_query(pkgs: &mut Vec<Self>, query: &str) -> ParseResult<()> {
+        // TODO: this function should get a consumer!
         let mut last = String::new();
         let mut quotes = vec![];
         let chrs = query.trim().chars();
@@ -265,6 +265,7 @@ impl Package {
     /// # Ok::<(), color_eyre::Report>(())
     /// ```
     pub fn add_query(pkgs: &mut Vec<Self>, query: &str) -> ParseResult<()> {
+        // TODO: this function should get a consumer!
         let query = query.trim(); // just in case
         if query.is_empty() {
             return Ok(());
@@ -693,6 +694,7 @@ impl RPMFiles {
     /// Parses a `%files` section using `self.raw`.
     fn parse(&mut self) -> ParseResult<()> {
         //? http://ftp.rpm.org/max-rpm/s1-rpm-inside-files-list-directives.html
+        // TODO: this function should get a consumer!
         let mut defattr = (0, "".into(), "".into(), 0);
         self.files = RE_FILE
             .captures_iter(&self.raw)
@@ -705,7 +707,7 @@ impl RPMFiles {
                     let [filemode, user, group, dirmode] = match *ss {
                         [filemode, user, group] => [filemode, user, group, ""],
                         [filemode, user, group, dmode] => [filemode, user, group, dmode],
-                        _ => return Err(Err::InvalidSyntax { span: todo!(), err: SpecErr::BadArgCount { expected: [3, 4], found: ss.len() }, notes: vec![] }),
+                        _ => return Err(Err::InvalidSyntax { span: todo!(), err: SpecErr::BadArgCount { expected: &[3, 4], found: ss.len() }, notes: vec![] }),
                     };
                     defattr = (
                         if filemode == "-" {
@@ -766,7 +768,8 @@ impl RPMFiles {
                         if name.starts_with("%verify(") {
                             let mut vs = x.split(' ').map_into().collect_vec();
                             if let Some(VerifyFileMod::None(modifier)) = vs.iter().find(|s| matches!(s, VerifyFileMod::None(_))) {
-                                return Err(Err::InvalidSyntax { span: todo!(), err: SpecErr::BadModifier { modifier, id: "%verify" }, notes: vec![] });
+                                let modifier = modifier.to_owned();
+                                syntaxerr!(BadModifier { modifier, id: "%verify" }@todo!());
                             }
                             if vs.contains(&VerifyFileMod::Not) {
                                 let mut ll = VerifyFileMod::all();
@@ -783,12 +786,12 @@ impl RPMFiles {
                             f.attr = RPMFileAttr::Config(match x {
                                 "missingok" => ConfigFileMod::MissingOK,
                                 "noreplace" => ConfigFileMod::NoReplace,
-                                _ => return Err(eyre!("`%config({x})` is unknown")),
+                                _ => syntaxerr!(BadModifier { modifier: x.into(), id: "%config" }@todo!()),
                             });
                             f.path = cap.get(3).expect("No RE grp 3 in %files?").as_str().into();
                             (f.mode, f.user, f.group, f.dmode) = defattr.clone();
                         }
-                        return Err(eyre!("Unknown %files directive: %{name}"));
+                        syntaxerr!(UnknownFilesDirective(name.into())@todo!());
                     }
                     f.attr = match name {
                         "%artifact " => RPMFileAttr::Artifact,
@@ -798,14 +801,14 @@ impl RPMFiles {
                         "%doc " | "%readme " => RPMFileAttr::Doc,
                         "%license " => RPMFileAttr::License,
                         "%docdir " => RPMFileAttr::Docdir,
-                        _ => return Err(eyre!("Unknown %files directive: %{name}")),
+                        _ => syntaxerr!(UnknownFilesDirective(name.into())@todo!()),
                     }
                 }
                 f.path = cap.get(3).expect("No RE grp 3 in %files?").as_str().into();
                 Ok(f)
             })
             .filter(|x| x.as_ref().map_or(false, |x| x.path.is_empty()))
-            .collect::<Result<Box<[RPMFile]>>>()?;
+            .collect::<ParseResult<Box<[RPMFile]>>>()?;
         Ok(())
     }
 }
@@ -940,7 +943,7 @@ impl Changelogs {
                     message: cap[11].trim().into(),
                 })
             })
-            .collect::<Result<Box<[Changelog]>>>()?;
+            .collect::<ParseResult<Box<[Changelog]>>>()?;
         Ok(())
     }
 }
@@ -1246,7 +1249,7 @@ impl SpecParser {
     ///
     /// # Errors
     /// - Fail to parse macros (probably invalid syntax)
-    pub fn parse_macro<R: Read>(&mut self, out: &mut String, reader: &mut Consumer<R>) -> ParseResult<(), Err> {
+    pub fn parse_macro<R: Read>(&mut self, out: &mut String, reader: &mut Consumer<R>) -> ParseResult<()> {
         while let Some(ch) = reader.next() {
             if ch != '%' {
                 out.push(ch);
@@ -1261,7 +1264,7 @@ impl SpecParser {
     ///
     /// # Errors
     /// - Fail to parse macros (probably invalid syntax)
-    pub fn parse_macro_defs<R: Read>(&mut self, out: &mut String, reader: &mut Consumer<R>) -> ParseResult<(), Err> {
+    pub fn parse_macro_defs<R: Read>(&mut self, out: &mut String, reader: &mut Consumer<R>) -> ParseResult<()> {
         let mut line_end_buf = String::new();
         while let Some(ch) = reader.next() {
             if ch == '\n' {
@@ -1291,7 +1294,7 @@ impl SpecParser {
     /// # Errors
     /// - Invalid syntax in expression
     /// - Cannot evaluate expression
-    pub fn parse_expr(&mut self, out: &mut String, reader: &mut Consumer<impl Read>) -> ParseResult<(), Err> {
+    pub fn parse_expr(&mut self, out: &mut String, reader: &mut Consumer<impl Read>) -> ParseResult<()> {
         use chumsky::Parser;
 
         // FIXME: it is not an exact replica of rpm: they do not parse the macros in the expression
@@ -1413,18 +1416,18 @@ impl SpecParser {
             if ch == '%' {
                 let mut param = false;
                 let mut name = String::new();
+                let namestart = csm.pos;
                 csm.read_before(&mut name, |ch| ch == '(' || ch.is_whitespace());
-                csm.until(|ch| ch == '(' || ch.is_whitespace());
                 let Some(mut x) = csm.next() else {
-                    return Err(eyre!("Unexpected EOF"));
+                    syntaxerr!(EmptyMacroDefinition { name, file: path.to_path_buf() }@csm.span(namestart..csm.pos));
                 };
                 if x == '(' {
                     csm.skip_til_endbrace(Brace::Round)?;
                     param = true;
-                    x = csm.next().ok_or_else(|| eyre!("Unexpected EOF"))?;
+                    x = csm.next().ok_or_else(|| syntaxerr!(~EmptyMacroDefinition { name: name.clone(), file: path.to_path_buf() }@csm.span(namestart..csm.pos)))?;
                 }
                 if !x.is_whitespace() && x != '\\' {
-                    return Err(eyre!("Unexpected character {x:?} at {}", csm.pos));
+                    syntaxerr!(BadChInMacroDef { ch: x, file: path.to_path_buf() }@csm.span(csm.pos-1..csm.pos));
                 }
                 csm.until(|ch| !ch.is_whitespace());
                 let offset = csm.pos; // start of definition
@@ -1432,10 +1435,7 @@ impl SpecParser {
                 csm.skip_til_eot()?; // eot is end of definition
                 trace!(pos = csm.pos, "finished parsing macro definition");
                 trace!(?name, "Insert macro");
-                let len = csm.pos - offset - 1;
-                //              ^^^^^^^  (start)   ┬
-                //               (end)             │
-                // we also need to remove the new line char
+                let len = csm.pos - offset - 1; // <end> - <start> - '\n'
                 let m = MacroType::Runtime { file: Arc::clone(&csm.file), s: Arc::clone(&csm.s), param, offset, len };
                 if let Some(v) = self.macros.get_mut(&name) {
                     v.push(m);
@@ -1466,21 +1466,21 @@ impl SpecParser {
     pub fn load_macros(&mut self) -> ParseResult<()> {
         // TODO: don't use rpm because that's cheating
         let binding = Command::new("sh").args(["-c", "rpm --showrc|grep '^Macro path'|sed 's/Macro path: //'"]).output()?;
-        let binding = core::str::from_utf8(&binding.stdout)?;
+        let binding = core::str::from_utf8(&binding.stdout).expect("Cannot read rpm sh output");
         let paths = binding.trim().split(':');
 
         for path in paths {
             let path = path.replace("%{_target}", ARCH);
             debug!(": {path}");
-            for path in glob::glob(path.as_str())? {
-                let p = path?;
+            for path in glob::glob(path.as_str()).unwrap() {
+                let p = path.unwrap();
                 let metadata = p.metadata()?;
                 if metadata.is_dir() {
                     self._load_macros_in_dir(p.as_path())?;
                 } else if metadata.is_file() {
                     self.load_macro_from_file(&p)?;
                 } else {
-                    return Err(eyre!("Unknown file type in load_macros for {p:?}"));
+                    continue;
                 }
             }
         }
@@ -1495,7 +1495,7 @@ impl SpecParser {
             } else if path.metadata()?.is_file() {
                 self.load_macro_from_file(&path.path())?;
             } else {
-                return Err(eyre!("Unknown file type in _load_macros_in_dir for {path:?}"));
+                continue;
             }
         }
         Ok(())
@@ -1505,7 +1505,7 @@ impl SpecParser {
     ///
     /// # Errors
     /// Fails if there are parsing failures / macro evaluation failures
-    pub fn _handle_conditions(&mut self, start: &str, remain: &str) -> ParseResult<bool> {
+    pub fn _handle_conditions(&mut self, start: &str, remain: &str, csm: &mut Consumer<impl Read>) -> ParseResult<bool> {
         // TODO: parse using RPM expressions
         match start {
             "if" => {
@@ -1522,7 +1522,7 @@ impl SpecParser {
             },
             "elifarch" => {
                 let Some((a, b)) = self.cond.last_mut() else {
-                    return Err(eyre!("%elifarch found without %if/%ifarch"));
+                    syntaxerr!(UnexpectedCond("elifarch")@csm.current_span());
                 };
                 if *b {
                     *a = false;
@@ -1533,7 +1533,7 @@ impl SpecParser {
             },
             "elifnarch" => {
                 let Some((a, b)) = self.cond.last_mut() else {
-                    return Err(eyre!("%elifarch found without %if/%ifarch"));
+                    syntaxerr!(UnexpectedCond("elifnarch")@csm.current_span());
                 };
                 if *b {
                     *a = false;
@@ -1544,7 +1544,7 @@ impl SpecParser {
             },
             "elif" => {
                 let Some((a, b)) = self.cond.last_mut() else {
-                    return Err(eyre!("%elif found without %if"));
+                    syntaxerr!(UnexpectedCond("elif")@csm.current_span());
                 };
                 if *b {
                     *a = false;
@@ -1555,7 +1555,7 @@ impl SpecParser {
             },
             "else" => {
                 let Some((a, b)) = self.cond.last_mut() else {
-                    return Err(eyre!("%else found without %if"));
+                    syntaxerr!(UnexpectedCond("else")@csm.current_span());
                 };
                 if *b {
                     *a = false;
@@ -1564,7 +1564,7 @@ impl SpecParser {
                     // *b = *a; (doesn't matter)
                 }
             },
-            "endif" => return if self.cond.pop().is_none() { Err(eyre!("%endif found without %if")) } else { Ok(true) },
+            "endif" => return if self.cond.pop().is_none() { Err(syntaxerr!(~UnexpectedCond("endif")@csm.current_span())) } else { Ok(true) },
             _ => return Ok(false),
         }
         Ok(true)
@@ -1597,7 +1597,7 @@ impl SpecParser {
         let remainpos = consumer.pos;
         self.parse_macro(&mut parsed_remain, consumer)?;
         let mut remain = parsed_remain;
-        if self._handle_conditions(&start[1..], &remain)? {
+        if self._handle_conditions(&start[1..], &remain, consumer)? {
             return Ok(true);
         }
         if let Some((false, _)) = self.cond.last() {
@@ -1612,32 +1612,36 @@ impl SpecParser {
             "description" if remain.is_empty() => RPMSection::Description("".into()),
             "description" => RPMSection::Description({
                 let mut remaincsm = Consumer::<std::fs::File>::from(&*remain);
-                let (_, mut args, flags) = self._param_macro_args(&mut remaincsm).map_err(|e| e.wrap_err("Cannot parse arguments to %description"))?;
+                let (_, mut args, flags) = self._param_macro_args(&mut remaincsm).map_err(|e| syntaxerr!(~BadCallToParamMacro("description", Box::new(e))@consumer.span(remainpos..consumer.end)))?;
                 if let Some(x) = flags.iter().find(|x| **x != "n") {
-                    return Err(eyre!("Unexpected %description flag `-{x}`"));
+                    syntaxerr!(UnexpectedFlagInStaticCall { flag: x.to_owned(), call: "description" }@consumer.span(remainpos..consumer.end));
                 }
                 let [arg] = args.as_mut_slice() else {
-                    return Err(eyre!("Expected 1, found {} arguments (excluding flags) to %description: {args:?}", args.len()));
+                    syntaxerr!(BadArgCount { expected: &[1], found: args.len() }@consumer.span(remainpos..consumer.end));
                 };
                 if flags.is_empty() {
-                    format!("{}-{arg}", self.rpm.name.as_ref().ok_or(eyre!("Expected package name before subpackage `{arg}`"))?).into()
+                    format!(
+                        "{}-{arg}",
+                        self.rpm.name.as_ref().ok_or_else(|| syntaxerr!(~UseOfUnknownSubpkgInSection { pkg: take(arg), section: "description" }@consumer.span(remainpos..consumer.end)))?
+                    )
+                    .into()
                 } else {
                     take(arg)
                 }
             }),
-            "package" if remain.is_empty() => return Err(eyre!("Expected arguments to %package: {start:?} / {remain:?}")),
+            "package" if remain.is_empty() => syntaxerr!(BadArgCount { expected: &[], found: 0 }@consumer.span(remainpos..consumer.end)),
             "package" => self._hdl_section_package(consumer, remainpos)?,
             "prep" => RPMSection::Prep,
             "build" => RPMSection::Build,
             "install" => RPMSection::Install,
-            "files" => self._hdl_section_files(&remain)?,
+            "files" => self._hdl_section_files(&remain, &consumer.range(remainpos..consumer.end).unwrap())?,
             "changelog" => RPMSection::Changelog,
             _ => return Ok(false),
         };
         Ok(true)
     }
 
-    fn _hdl_section_files(&mut self, remain: &str) -> ParseResult<RPMSection> {
+    fn _hdl_section_files(&mut self, remain: &str, csm: &Consumer<impl Read>) -> ParseResult<RPMSection> {
         let (mut f, mut name, mut remains) = (None, String::new(), remain.split(' '));
         while let Some(remain) = remains.next() {
             if remain.is_empty() {
@@ -1647,52 +1651,57 @@ impl SpecParser {
                 match flag {
                     "f" => {
                         let Some(next) = remains.next() else {
-                            return Err(eyre!("Expected argument for %files after `-f`"));
+                            syntaxerr!(NoArgWithFlag { flag: "f", call: "files" }@csm.current_span());
                         };
                         if next.starts_with('-') {
-                            return Err(eyre!("Expected argument for %files after `-f`, found flag `{next}`"));
+                            syntaxerr!(NoArgWithFlag { flag: "f", call: "files" }@csm.current_span());
                         }
-                        if let Some(old) = f {
-                            return Err(eyre!("Unexpected duplicated `-f`").note(format!("Old: {old}")).note(format!("New: {next}")));
+                        if let Some(prev) = f {
+                            syntaxerr!(DupFlagsToStaticCall { flag: "f", call: "files", prev, found: next.into() }@csm.current_span());
                         }
                         f = Some(next.into());
                     },
                     "n" => {
                         let Some(next) = remains.next() else {
-                            return Err(eyre!("Expected argument for %files after `-n`"));
+                            syntaxerr!(NoArgWithFlag { flag: "n", call: "files" }@csm.current_span());
                         };
                         if next.starts_with('-') {
-                            return Err(eyre!("Expected argument for %files after `-n`, found flag `{next}`"));
+                            syntaxerr!(NoArgWithFlag { flag: "n", call: "files" }@csm.current_span());
                         }
                         if !name.is_empty() {
-                            return Err(eyre!("The name of the subpackage is already set.").note(format!("Old: {name}")).note(format!("New: {next}")));
+                            syntaxerr!(DupFlagsToStaticCall { flag: "n", call: "files", prev: name.into(), found: next.into() }@csm.current_span());
                         }
                         name = next.into();
                     },
-                    _ => return Err(eyre!("Unexpected flag `-{flag}` for %files")),
+                    _ => syntaxerr!(UnexpectedFlagInStaticCall { flag: flag.into(), call: "files" }@csm.current_span()),
                 }
             } else {
                 if !name.is_empty() {
-                    return Err(eyre!("The name of the subpackage is already set.").note(format!("Old: {name}")).note(format!("New: {remain}")));
+                    syntaxerr!(
+                        DupFlagsToStaticCall { flag: "n", call: "files", prev: name, found: remain.into() }
+                            @csm.current_span()
+                        => ["Did you specify the name of the subpackage twice (with or without `-n`)?"]
+                    );
                 }
-                name = format!("{}-{remain}", self.rpm.name.as_ref().ok_or(eyre!("Expected package name before subpackage `{remain}`"))?).into();
+                name = format!("{}-{remain}", self.rpm.name.as_ref().ok_or_else(|| syntaxerr!(~UseOfUnknownSubpkgInSection { pkg: remain.into(), section: "files" }@csm.current_span()))?).into();
             }
         }
         Ok(RPMSection::Files(name, f))
     }
 
-    fn _hdl_section_package(&mut self, consumer: &mut Consumer<impl Read>, remainpos: usize) -> ParseResult<RPMSection, color_eyre::eyre::Error> {
+    fn _hdl_section_package(&mut self, consumer: &mut Consumer<impl Read>, remainpos: usize) -> ParseResult<RPMSection> {
         let mut remaincsm = consumer.range(remainpos..consumer.pos).expect("Cannot unwind Consumer");
-        let (_, mut args, flags) = self._param_macro_args(&mut remaincsm).map_err(|e| e.wrap_err("Cannot parse arguments to %package"))?;
+        let (_, mut args, flags) = self._param_macro_args(&mut remaincsm).map_err(|e| syntaxerr!(~BadCallToParamMacro("package", Box::new(e))@consumer.span(remainpos..consumer.end)))?;
         if let Some(x) = flags.iter().find(|x| **x != "n") {
-            return Err(eyre!("Unexpected %package flag `-{x}`"));
+            syntaxerr!(UnexpectedFlagInStaticCall { flag: x.to_owned(), call: "package" }@remaincsm.current_span());
         }
         let [arg] = args.as_mut_slice() else {
-            return Err(eyre!("Expected 1, found {} arguments (excluding flags) to %package", args.len()));
+            syntaxerr!(BadArgCount { expected: &[1], found: args.len() }@remaincsm.current_span());
         };
-        let name = if flags.is_empty() { format!("{}-{arg}", self.rpm.name.as_ref().ok_or(eyre!("Expected package name before subpackage `{arg}`"))?).into() } else { take(arg) };
+        let name =
+            if flags.is_empty() { format!("{}-{arg}", self.rpm.name.as_ref().ok_or_else(|| syntaxerr!(~NoMainNameToInferSubpkgName(take(arg))@remaincsm.current_span()))?).into() } else { take(arg) };
         if self.rpm.packages.contains_key(&name) {
-            return Err(eyre!("The subpackage {name} has already been declared"));
+            syntaxerr!(RedeclareSubpkg(name)@remaincsm.current_span());
         }
         self.rpm.packages.insert(name.clone(), RPMSpecPkg::default());
         Ok(RPMSection::Package(name))

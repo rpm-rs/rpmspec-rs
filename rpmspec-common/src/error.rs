@@ -32,6 +32,7 @@ pub enum SpecErr {
     InvalidPackageArch { arch: String, offending: Option<String> },
 
     #[error("Invalid expression: {0}")]
+    #[deprecated = "Please use the one in ParseErr"]
     InvalidExpression(#[from] ExprErr),
 
     #[error("Wrong number of arguments: expected one of {expected:?}, found {found}")]
@@ -40,13 +41,37 @@ pub enum SpecErr {
     BadMode { mode: String, err: ParseIntError },
     #[error("Bad modifier `{modifier}` for `{id}(...)`")]
     BadModifier { modifier: String, id: &'static str },
+    #[error("Unknown %files directive: %{0}")]
+    UnknownFilesDirective(String),
+
+    #[error("Declared macro has empty/no definition in macro definition file")]
+    EmptyMacroDefinition { name: String, file: std::path::PathBuf },
+    #[error("Unexpected character in macro definition file")]
+    BadChInMacroDef { ch: char, file: std::path::PathBuf },
+
+    #[error("Unexpected conditional statement %{0}")]
+    UnexpectedCond(&'static str),
+    #[error("Bad arguments to parameterized macro or section %{0}: {1}")]
+    BadCallToParamMacro(&'static str, Box<ParseErr>),
+    #[error("Expected `%package {pkg}` to be declared before use of currently unknown subpackage in `%{section}`")]
+    UseOfUnknownSubpkgInSection { pkg: String, section: &'static str },
+    #[error("Unexpected flag `-{flag}` when calling `%{call}`")]
+    UnexpectedFlagInStaticCall { flag: String, call: &'static str },
+    #[error("Expected arguments to `-{flag}` when calling `%{call}`")]
+    NoArgWithFlag { flag: &'static str, call: &'static str },
+    #[error("Duplicated flags `-{flag}` to `%{call}`, previously `{prev}`, found `{found}`")]
+    DupFlagsToStaticCall { flag: &'static str, call: &'static str, prev: String, found: String },
+    #[error("Creating new sub-`%package {0}` without `-n` while main package `Name:` is undefined")]
+    NoMainNameToInferSubpkgName(String),
+    #[error("Declaring subpackage with taken name: `{0}`")]
+    RedeclareSubpkg(String),
 }
 
-/// Position information (byte offset)
-#[derive(Debug)]
+/// Position information (char offset)
+#[derive(Debug, Default)]
 pub struct Span {
     filename: Option<Arc<Path>>,
-    start: usize, // TODO: figure out if we should store this as byte offset?
+    start: usize,
     end: usize,
     kind: SpanType,
 }
@@ -75,8 +100,9 @@ impl Display for Span {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub enum SpanType {
+    #[default]
     Err,
     Warn,
     Note,
@@ -111,7 +137,7 @@ pub enum ParseErr {
     InvalidSyntax {
         span: Span, // probably todo?
         err: SpecErr,
-        notes: Vec<(Span, Box<dyn DisplayDebug>)>,
+        notes: Vec<(Option<Span>, Box<dyn DisplayDebug>)>,
     },
 
     /// The preamble specified is invalid.
@@ -142,8 +168,8 @@ pub enum ParseErr {
     /// A Lua error
     #[error("Lua error: {0}")]
     LuaError(#[from] mlua::Error),
-    // #[error("IO error: {0}")]
-    // IoError(#[from] std::io::Error),
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
 }
 
 impl From<&str> for ParseErr {
@@ -246,4 +272,22 @@ impl From<Vec<Simple<char>>> for ExprErr {
     fn from(value: Vec<Simple<char>>) -> Self {
         Self::BadExprParse(value.into_boxed_slice())
     }
+}
+
+#[macro_export]
+macro_rules! syntaxerr {
+    (#notes) => {vec![]};
+    (#notes [$($note:expr),*$(,)?]) => {
+        vec![$((None, Box::new($note))),*]
+    };
+    (~$kind:ident$tt:tt@$span:expr$(=>[ $($note:expr),*$(,)? ])?) => {
+        $crate::error::ParseErr::InvalidSyntax {
+            span: $span,
+            err: $crate::error::SpecErr::$kind$tt,
+            notes: syntaxerr!(#notes $([$($note),*])?),
+        }
+    };
+    ($kind:ident$tt:tt@$span:expr$(=>[ $($note:expr),*$(,)? ])?) => {
+        return Err(syntaxerr!(~$kind$tt@$span$(=>[$($note),*])?))
+    };
 }

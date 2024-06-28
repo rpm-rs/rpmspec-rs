@@ -289,6 +289,30 @@ impl<R: Read + ?Sized> Consumer<R> {
         self.skip_til_endbrace(brace)?;
         Ok(self.range_string(start..self.pos - 1).unwrap())
     }
+
+    /// Convert the range (byte offset) into a Span (char offset)
+    ///
+    /// This operation is expensive (`O(n)`).
+    pub fn span(&self, range: std::ops::Range<usize>) -> crate::error::Span {
+        let mut span = crate::error::Span::default();
+        let mut in_span = false;
+        for (cpos, (bpos, _)) in self.s.read().char_indices().enumerate() {
+            if !in_span && bpos >= range.start {
+                span.start(cpos);
+                in_span = true;
+            }
+            if bpos >= range.end {
+                span.end(cpos);
+                break;
+            }
+        }
+        span
+    }
+
+    /// Get the entire span that the consumer is allowed to read from
+    pub fn current_span(&self) -> crate::error::Span {
+        self.span(self.pos..self.end)
+    }
 }
 
 impl<R: ?Sized + Read> Iterator for Consumer<R> {
