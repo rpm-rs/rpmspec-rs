@@ -1,5 +1,4 @@
 use crate::error::ExprErr;
-use color_eyre::eyre::eyre;
 use smartstring::alias::String;
 use std::str::FromStr;
 
@@ -36,19 +35,20 @@ impl FromStr for Version {
             if ch == ':' {
                 match last.parse() {
                     Ok(e) => evr.epoch = e,
-                    Err(e) => return Err(eyre!("Cannot parse epoch: {e:#}").into()),
+                    // Err(e) => return Err(format!("Cannot parse epoch: {e:#}".into())),
+                    Err(e) => return Err(ExprErr::EpochParse(e)),
                 }
                 last.clear();
                 continue;
             }
             if ch == '-' {
                 if !evr.ver.is_empty() {
-                    return Err(eyre!("Unexpected double `-` in version: `{}-{last:?}-`", evr.ver).into());
+                    return Err(format!("Unexpected double `-` in version: `{}-{last:?}-`", evr.ver).into());
                 }
                 evr.ver = std::mem::take(&mut last);
             }
             if !ch.is_ascii_alphanumeric() && !"^~.".contains(ch) {
-                return Err(eyre!("Unexpected character `{ch}` in evr").into());
+                return Err("Unexpected character `{ch}` in evr".into());
             }
             last.push(ch);
         }

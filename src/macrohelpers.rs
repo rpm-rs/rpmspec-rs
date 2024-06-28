@@ -93,7 +93,7 @@ macro_rules! preamble_maker {
         $rpm.[<$field:lower>] = Some($value);
     }};
     (@g($self:ident $rpm:ident $name:ident $value:ident $offset:ident $csm:ident) $field:ident: bool) => { ::paste::paste! {
-        $rpm.[<$field:lower>] = $value.parse()?;
+        $rpm.[<$field:lower>] = $value.parse().map_err(|err| syntaxerr!(~PreambleNotBool { value: $value.into(), preamble: stringify!($field), err }@$csm.current_span()))?;
         return Ok(());
     }};
     (@g($self:ident $rpm:ident $name:ident $value:ident $offset:ident $csm:ident) $field:ident: Strings) => { ::paste::paste! {
@@ -101,7 +101,7 @@ macro_rules! preamble_maker {
         return Ok(());
     }};
     (@g($self:ident $rpm:ident $name:ident $value:ident $offset:ident $csm:ident) Epoch: u32) => {
-        $rpm.epoch = $value.parse().map_err(|e: ::std::num::ParseIntError| eyre!(e).wrap_err("Failed to decode epoch to int"))?;
+        $rpm.epoch = $value.parse().map_err(|err| syntaxerr!(~InvalidPackageEpoch { epoch: $value, err }@$csm.current_span()))?;
         return Ok(());
     };
     (@g($self:ident $rpm:ident $name:ident $value:ident $offset:ident $csm:ident) $field:ident: Pkgs) => { ::paste::paste! {
@@ -129,48 +129,48 @@ macro_rules! preamble_maker {
 macro_rules! gen_render_pop {
     ($dollar:tt$spec:ident$self:ident) => {
         macro_rules! render_pop {
-           	(@self) => {$self};
-           	(@self $a:ident) => {$a};
-           	($preamble:expr, $val:expr) => {{
-          		let preamble = $preamble;
-          		let padding = 14 - preamble.len();
-          		write!($spec, "{preamble}:{}{}\n", " ".repeat(padding), $val).unwrap();
+            (@self) => {$self};
+            (@self $a:ident) => {$a};
+            ($preamble:expr, $val:expr) => {{
+                let preamble = $preamble;
+                let padding = 14 - preamble.len();
+                write!($spec, "{preamble}:{}{}\n", " ".repeat(padding), $val).unwrap();
            	}};
-           	($preamble:expr => $dollar(~$cur:ident.)?$attr:ident) => {{
-          		if let Some(val) = &render_pop!(@self $dollar($cur)?).$attr {
-         			render_pop!($preamble, val);
-          		}
-           	}};
-           	($preamble:expr => $dollar(~$cur:ident.)?$attr:ident or $default:expr) => {{
-          		render_pop!($preamble, render_pop!(@self $dollar($cur)?).$attr.as_ref().map_or($default, |s| s));
-           	}};
+            ($preamble:expr => $dollar(~$cur:ident.)?$attr:ident) => {{
+                if let Some(val) = &render_pop!(@self $dollar($cur)?).$attr {
+                    render_pop!($preamble, val);
+                }
+            }};
+            ($preamble:expr => $dollar(~$cur:ident.)?$attr:ident or $default:expr) => {{
+                render_pop!($preamble, render_pop!(@self $dollar($cur)?).$attr.as_ref().map_or($default, |s| s));
+            }};
            	($preamble:expr => ..$dollar(~$cur:ident.)?$attr:ident) => {{
-          		if !render_pop!(@self $dollar($cur)?).$attr.is_empty() {
-         			render_pop!($preamble, &render_pop!(@self $dollar($cur)?).$attr.iter().map(|pkg| Box::new(lzf!("{pkg}"))).join(" "));
-          		}
-           	}};
-           	($preamble:ident: $dollar($x:tt)*) => {
-          		render_pop!(stringify!($preamble) => $dollar($x)*);
-           	};
-           	($preamble:expr => $b:block) => {{
-          		render_pop!($preamble, $b);
-           	}};
-           	(@use) => { "" };
-           	(@use $subpackage:expr, $header:expr) => { $header:expr };
-           	(@in $scriptlets:ident $dollar(for $header:expr)?) => {
-          		render_pop!(%(pre post preun postun pretrans posttrans verify triggerprein triggerin triggerun triggerpostun filetriggerin filetriggerun filetriggerpostun transfiletriggerin transfiletriggerun transfiletriggerpostun) in $scriptlets $dollar(for $header)?);
-           	};
-           	(@header) => { "" };
-           	(@header $header:expr) => { lzf!(" {}", $header) };
-           	(%($dollar($section:ident)*) in $scriptlets:ident $dollar(for $header:expr)?) => {
-          		// we need this because rust doesn't support macro nesting with $()? inside $()*
-          		let header = render_pop!(@header $dollar($header)?);
-          		$dollar(
-         			if let Some(s) = &$scriptlets.$section {
-         			    write!($spec, "\n\n%{}{header}\n{s}", stringify!($section)).unwrap();
-         			}
-          		)*
-           	};
+                if !render_pop!(@self $dollar($cur)?).$attr.is_empty() {
+                    render_pop!($preamble, &render_pop!(@self $dollar($cur)?).$attr.iter().map(|pkg| Box::new(lzf!("{pkg}"))).join(" "));
+                }
+            }};
+            ($preamble:ident: $dollar($x:tt)*) => {
+                render_pop!(stringify!($preamble) => $dollar($x)*);
+            };
+            ($preamble:expr => $b:block) => {{
+                render_pop!($preamble, $b);
+            }};
+            (@use) => { "" };
+            (@use $subpackage:expr, $header:expr) => { $header:expr };
+            (@in $scriptlets:ident $dollar(for $header:expr)?) => {
+                render_pop!(%(pre post preun postun pretrans posttrans verify triggerprein triggerin triggerun triggerpostun filetriggerin filetriggerun filetriggerpostun transfiletriggerin transfiletriggerun transfiletriggerpostun) in $scriptlets $dollar(for $header)?);
+            };
+            (@header) => { "" };
+            (@header $header:expr) => { lzf!(" {}", $header) };
+            (%($dollar($section:ident)*) in $scriptlets:ident $dollar(for $header:expr)?) => {
+                // we need this because rust doesn't support macro nesting with $()? inside $()*
+                let header = render_pop!(@header $dollar($header)?);
+                $dollar(
+                    if let Some(s) = &$scriptlets.$section {
+                        write!($spec, "\n\n%{}{header}\n{s}", stringify!($section)).unwrap();
+                    }
+                )*
+            };
         }
     };
 }
