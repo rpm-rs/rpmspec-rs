@@ -5,7 +5,6 @@ use crate::util::Consumer;
 use itertools::Itertools;
 use lazy_format::lazy_format as lzf;
 use parking_lot::RwLock;
-use regex::Regex;
 use rpmspec_common::{
     error::SpecErr,
     opt, syntaxerr,
@@ -27,14 +26,20 @@ use std::{
 use tracing::{debug, trace, warn};
 
 const PKGNAMECHARSET: &str = "_-().";
-lazy_static::lazy_static! {
-    static ref RE_PQC:	Regex = Regex::new(r"^(>=?|<=?|=)\s+(\d+:)?([\w\d.^]+)(-([\w\d.^]+))?(.*)").unwrap();
-    static ref RE_REQ:	Regex = Regex::new(r"(?m)^Requires(?:\(([\w,\s]+)\))?:\s*(.+)$").unwrap();
-    static ref RE_FILE:	Regex = Regex::new(r"(?m)^(%\w+(\(.+\))?\s+)?(.+)$").unwrap();
-    static ref RE_CLOG:	Regex = Regex::new(r"(?m)^\*[ \t]*((\w{3})[ \t]+(\w{3})[ \t]+(\d+)[ \t]+(\d+))[ \t]+(\S+)([ \t]+<([\w@.+]+)>)?([ \t]+-[ \t]+([\d.-^~_\w]+))?$((\n^[^*\n]*)+)").unwrap();
-    static ref RE_PMB:	Regex = Regex::new(r"(\w+\d*):\s*(.+)").unwrap();
-    static ref RE_DNL:	Regex = Regex::new(r"%dnl\b").unwrap();
+#[allow(clippy::unwrap_used)]
+pub(crate) mod lazies {
+    use regex::Regex;
+    lazy_static::lazy_static! {
+        pub static ref RE_PQC:	Regex = Regex::new(r"^(>=?|<=?|=)\s+(\d+:)?([\w\d.^]+)(-([\w\d.^]+))?(.*)").unwrap();
+        pub static ref RE_REQ:	Regex = Regex::new(r"(?m)^Requires(?:\(([\w,\s]+)\))?:\s*(.+)$").unwrap();
+        pub static ref RE_FILE:	Regex = Regex::new(r"(?m)^(%\w+(\(.+\))?\s+)?(.+)$").unwrap();
+        pub static ref RE_CLOG:	Regex = Regex::new(r"(?m)^\*[ \t]*((\w{3})[ \t]+(\w{3})[ \t]+(\d+)[ \t]+(\d+))[ \t]+(\S+)([ \t]+<([\w@.+]+)>)?([ \t]+-[ \t]+([\d.-^~_\w]+))?$((\n^[^*\n]*)+)").unwrap();
+        pub static ref RE_PMB:	Regex = Regex::new(r"(\w+\d*):\s*(.+)").unwrap();
+        pub static ref RE_DNL:	Regex = Regex::new(r"%dnl\b").unwrap();
+    }
 }
+#[allow(clippy::wildcard_imports)]
+use lazies::*;
 
 /// Conditional operators used in specifying dependencies.
 /// ## Symbols
@@ -61,11 +66,11 @@ pub enum PkgQCond {
 impl std::borrow::Borrow<str> for PkgQCond {
     fn borrow(&self) -> &str {
         match self {
-            PkgQCond::Eq => "=",
-            PkgQCond::Le => "<=",
-            PkgQCond::Lt => "<",
-            PkgQCond::Ge => ">=",
-            PkgQCond::Gt => ">",
+            Self::Eq => "=",
+            Self::Le => "<=",
+            Self::Lt => "<",
+            Self::Ge => ">=",
+            Self::Gt => ">",
         }
     }
 }
@@ -401,20 +406,14 @@ impl Display for RPMRequires {
 			($($attr:ident)*) => {
 				$({
 				    if !self.$attr.is_empty() {
-					    let name = stringify!($attr);
-					    if name == "none" {
+					    const NAME: &str = stringify!($attr);
+					    if NAME == "none" {
 						    f.write_str("Requires:      ")?;
 				            self.none.iter().try_for_each(|pkg| f.write_fmt(format_args!(" {pkg}")))?;
 						    f.write_str("\n")?;
 					    } else {
-						    f.write_str("Requires(")?;
-						    f.write_str(name)?;
-						    f.write_str("):")?;
-						    let mut padding = 4 - name.len() as isize;
-						    while padding <= 0 {
-							    padding += 3;
-						    }
-						    f.write_str(&" ".repeat(padding as usize))?;
+							const QUOTED_NAME: &str = const_format::formatcp!("({NAME}):");
+							write!(f, "Requires{QUOTED_NAME:<12}")?;
 				            self.$attr.iter().try_for_each(|pkg| f.write_fmt(format_args!(" {pkg}")))?;
 						    f.write_str("\n")?;
 					    }
@@ -696,119 +695,118 @@ impl RPMFiles {
         //? http://ftp.rpm.org/max-rpm/s1-rpm-inside-files-list-directives.html
         // TODO: this function should get a consumer!
         let mut defattr = (0, "".into(), "".into(), 0);
-        self.files = RE_FILE
-            .captures_iter(&self.raw)
-            .map(|cap| {
-                if let Some(remain) = &cap[0].strip_prefix("%defattr(") {
-                    let Some(remain) = remain.trim_end().strip_suffix(')') else {
-                        return Err(Err::InvalidSyntax { span: todo!(), err: SpecErr::UnclosedBraces { quotes: vec![Brace::Round] }, notes: vec![(todo!(), Box::new("While parsing %defattr(..."))] });
-                    };
-                    let ss: Box<[&str]> = remain.split(',').map(str::trim).collect();
-                    let [filemode, user, group, dirmode] = match *ss {
-                        [filemode, user, group] => [filemode, user, group, ""],
-                        [filemode, user, group, dmode] => [filemode, user, group, dmode],
-                        _ => return Err(Err::InvalidSyntax { span: todo!(), err: SpecErr::BadArgCount { expected: &[3, 4], found: ss.len() }, notes: vec![] }),
-                    };
-                    defattr = (
-                        if filemode == "-" {
-                            0
-                        } else {
-                            filemode.parse().map_err(|err| Err::InvalidSyntax {
-                                span: todo!(),
-                                err: SpecErr::BadMode { mode: filemode.into(), err },
-                                notes: vec![(todo!(), Box::new("While parsing %defattr")), (todo!(), Box::new("While parsing file mode"))],
-                            })?
-                        },
-                        (if user == "-" { "" } else { user }).into(),
-                        (if group == "-" { "" } else { group }).into(),
-                        if dirmode == "-" {
-                            0
-                        } else {
-                            dirmode.parse().map_err(|err| Err::InvalidSyntax {
-                                span: todo!(),
-                                err: SpecErr::BadMode { mode: dirmode.into(), err },
-                                notes: vec![(todo!(), Box::new("While parsing %defattr")), (todo!(), Box::new("While parsing dir mode"))],
-                            })?
-                        },
-                    );
-                    return Ok(RPMFile::default());
-                }
-                let mut f = RPMFile::default();
-                if let Some(name) = cap.get(1) {
-                    let name = name.as_str();
-                    if let Some(m) = cap.get(2) {
-                        let x = m.as_str().strip_prefix('(').expect("RE_FILE not matching parens `(...)` but found capture group 2");
-                        let x = x.strip_suffix(')').expect("RE_FILE not matching parens `(...)` but found capture group 2");
-                        if name.starts_with("%attr(") {
-                            let ss: Vec<&str> = x.split(',').map(str::trim).collect();
-                            let Some([fmode, user, group]) = ss.get(0..=2) else {
-                                return Err(Err::InvalidSyntax {
-                                    span: todo!(),
-                                    err: SpecErr::BadArgCount { expected: &[3], found: ss.len() },
-                                    notes: vec![(todo!(), Box::new("While parsing %attr(...)"))],
-                                });
-                            };
-                            let (fmode, user, group) = (*fmode, *user, *group);
-                            if fmode != "-" {
-                                f.mode = fmode.parse().map_err(|err| Err::InvalidSyntax {
-                                    span: todo!(),
-                                    err: SpecErr::BadMode { mode: fmode.into(), err },
-                                    notes: vec![(todo!(), Box::new("While parsing %defattr")), (todo!(), Box::new("While parsing file mode"))],
-                                })?;
-                            }
-                            if user != "-" {
-                                f.user = user.into();
-                            }
-                            if group != "-" {
-                                f.group = group.into();
-                            }
-                            f.path = cap.get(3).expect("No RE grp 3 in %files?").as_str().into();
-                            return Ok(f);
-                        }
-                        if name.starts_with("%verify(") {
-                            let mut vs = x.split(' ').map_into().collect_vec();
-                            if let Some(VerifyFileMod::None(modifier)) = vs.iter().find(|s| matches!(s, VerifyFileMod::None(_))) {
-                                let modifier = modifier.to_owned();
-                                syntaxerr!(BadModifier { modifier, id: "%verify" }@todo!());
-                            }
-                            if vs.contains(&VerifyFileMod::Not) {
-                                let mut ll = VerifyFileMod::all();
-                                ll.retain(|x| !vs.contains(x));
-                                vs = ll;
-                            }
-                            f.attr = RPMFileAttr::Verify(vs.into_boxed_slice());
-                            f.path = cap.get(3).expect("No RE grp 3 in %files?").as_str().into();
-                            (f.mode, f.user, f.group, f.dmode) = defattr.clone();
+        self.files = RE_FILE.captures_iter(&self.raw).filter_map(|cap| Self::_parse_map(&cap, &mut defattr).transpose()).filter_ok(|x| x.path.is_empty()).try_collect()?;
+        Ok(())
+    }
 
-                            return Ok(f);
-                        }
-                        if name.starts_with("%config(") {
-                            f.attr = RPMFileAttr::Config(match x {
-                                "missingok" => ConfigFileMod::MissingOK,
-                                "noreplace" => ConfigFileMod::NoReplace,
-                                _ => syntaxerr!(BadModifier { modifier: x.into(), id: "%config" }@todo!()),
-                            });
-                            f.path = cap.get(3).expect("No RE grp 3 in %files?").as_str().into();
-                            (f.mode, f.user, f.group, f.dmode) = defattr.clone();
-                        }
-                        syntaxerr!(UnknownFilesDirective(name.into())@todo!());
+    fn _parse_map(cap: &regex::Captures, defattr: &mut (u16, String, String, u16)) -> Result<Option<RPMFile>, Err> {
+        if let Some(remain) = &cap[0].strip_prefix("%defattr(") {
+            Self::_parse_map_defattr(remain, defattr)?;
+            return Ok(None);
+        }
+        let mut f = RPMFile::default();
+        if let Some(name) = cap.get(1) {
+            let name = name.as_str();
+            if let Some(m) = cap.get(2) {
+                let x = m.as_str().strip_prefix('(').expect("RE_FILE not matching parens `(...)` but found capture group 2");
+                let x = x.strip_suffix(')').expect("RE_FILE not matching parens `(...)` but found capture group 2");
+                if name.starts_with("%attr(") {
+                    let ss: Vec<&str> = x.split(',').map(str::trim).collect();
+                    let Some([fmode, user, group]) = ss.get(0..=2) else {
+                        return Err(Err::InvalidSyntax { span: todo!(), err: SpecErr::BadArgCount { expected: &[3], found: ss.len() }, notes: vec![(todo!(), Box::new("While parsing %attr(...)"))] });
+                    };
+                    let (fmode, user, group) = (*fmode, *user, *group);
+                    if fmode != "-" {
+                        f.mode = fmode.parse().map_err(|err| Err::InvalidSyntax {
+                            span: todo!(),
+                            err: SpecErr::BadMode { mode: fmode.into(), err },
+                            notes: vec![(todo!(), Box::new("While parsing %defattr")), (todo!(), Box::new("While parsing file mode"))],
+                        })?;
                     }
-                    f.attr = match name {
-                        "%artifact " => RPMFileAttr::Artifact,
-                        "%ghost " => RPMFileAttr::Ghost,
-                        "%config " => RPMFileAttr::Config(ConfigFileMod::None),
-                        "%dir " => RPMFileAttr::Dir,
-                        "%doc " | "%readme " => RPMFileAttr::Doc,
-                        "%license " => RPMFileAttr::License,
-                        "%docdir " => RPMFileAttr::Docdir,
-                        _ => syntaxerr!(UnknownFilesDirective(name.into())@todo!()),
+                    if user != "-" {
+                        f.user = user.into();
                     }
+                    if group != "-" {
+                        f.group = group.into();
+                    }
+                    f.path = cap.get(3).expect("No RE grp 3 in %files?").as_str().into();
+                    return Ok(Some(f));
                 }
-                f.path = cap.get(3).expect("No RE grp 3 in %files?").as_str().into();
-                Ok(f)
-            })
-            .filter(|x| x.as_ref().map_or(false, |x| x.path.is_empty()))
-            .collect::<ParseResult<Box<[RPMFile]>>>()?;
+                if name.starts_with("%verify(") {
+                    let mut vs = x.split(' ').map_into().collect_vec();
+                    if let Some(VerifyFileMod::None(modifier)) = vs.iter().find(|s| matches!(s, VerifyFileMod::None(_))) {
+                        let modifier = modifier.to_owned();
+                        syntaxerr!(BadModifier { modifier, id: "%verify" }@todo!());
+                    }
+                    if vs.contains(&VerifyFileMod::Not) {
+                        let mut ll = VerifyFileMod::all();
+                        ll.retain(|x| !vs.contains(x));
+                        vs = ll;
+                    }
+                    f.attr = RPMFileAttr::Verify(vs.into_boxed_slice());
+                    f.path = cap.get(3).expect("No RE grp 3 in %files?").as_str().into();
+                    (f.mode, f.user, f.group, f.dmode) = defattr.clone();
+
+                    return Ok(Some(f));
+                }
+                if name.starts_with("%config(") {
+                    f.attr = RPMFileAttr::Config(match x {
+                        "missingok" => ConfigFileMod::MissingOK,
+                        "noreplace" => ConfigFileMod::NoReplace,
+                        _ => syntaxerr!(BadModifier { modifier: x.into(), id: "%config" }@todo!()),
+                    });
+                    f.path = cap.get(3).expect("No RE grp 3 in %files?").as_str().into();
+                    (f.mode, f.user, f.group, f.dmode) = defattr.clone();
+                }
+                syntaxerr!(UnknownFilesDirective(name.into())@todo!());
+            }
+            f.attr = match name {
+                "%artifact " => RPMFileAttr::Artifact,
+                "%ghost " => RPMFileAttr::Ghost,
+                "%config " => RPMFileAttr::Config(ConfigFileMod::None),
+                "%dir " => RPMFileAttr::Dir,
+                "%doc " | "%readme " => RPMFileAttr::Doc,
+                "%license " => RPMFileAttr::License,
+                "%docdir " => RPMFileAttr::Docdir,
+                _ => syntaxerr!(UnknownFilesDirective(name.into())@todo!()),
+            }
+        }
+        f.path = cap.get(3).expect("No RE grp 3 in %files?").as_str().into();
+        Ok(Some(f))
+    }
+
+    fn _parse_map_defattr(remain: &&str, defattr: &mut (u16, String, String, u16)) -> Result<(), Err> {
+        let Some(remain) = remain.trim_end().strip_suffix(')') else {
+            return Err(Err::InvalidSyntax { span: todo!(), err: SpecErr::UnclosedBraces { quotes: vec![Brace::Round] }, notes: vec![(todo!(), Box::new("While parsing %defattr(..."))] });
+        };
+        let ss: Box<[&str]> = remain.split(',').map(str::trim).collect();
+        let [filemode, user, group, dirmode] = match *ss {
+            [filemode, user, group] => [filemode, user, group, ""],
+            [filemode, user, group, dmode] => [filemode, user, group, dmode],
+            _ => return Err(Err::InvalidSyntax { span: todo!(), err: SpecErr::BadArgCount { expected: &[3, 4], found: ss.len() }, notes: vec![] }),
+        };
+        *defattr = (
+            if filemode == "-" {
+                0
+            } else {
+                filemode.parse().map_err(|err| Err::InvalidSyntax {
+                    span: todo!(),
+                    err: SpecErr::BadMode { mode: filemode.into(), err },
+                    notes: vec![(todo!(), Box::new("While parsing %defattr")), (todo!(), Box::new("While parsing file mode"))],
+                })?
+            },
+            (if user == "-" { "" } else { user }).into(),
+            (if group == "-" { "" } else { group }).into(),
+            if dirmode == "-" {
+                0
+            } else {
+                dirmode.parse().map_err(|err| Err::InvalidSyntax {
+                    span: todo!(),
+                    err: SpecErr::BadMode { mode: dirmode.into(), err },
+                    notes: vec![(todo!(), Box::new("While parsing %defattr")), (todo!(), Box::new("While parsing dir mode"))],
+                })?
+            },
+        );
         Ok(())
     }
 }
@@ -936,7 +934,7 @@ impl Changelogs {
             .captures_iter(&self.raw)
             .map(|cap| {
                 Ok(Changelog {
-                    date: chrono::NaiveDate::parse_from_str(&cap[1], "%a %b %d %Y").map_err(|e| eyre!(e).wrap_err("Cannot parse date in %changelog"))?,
+                    date: chrono::NaiveDate::parse_from_str(&cap[1], "%a %b %d %Y").map_err(|e| syntaxerr!(~InvalidChangelogDate(e)@todo!()))?,
                     version: cap.get(10).map(|v| v.as_str().into()),
                     maintainer: cap[6].into(),
                     email: cap.get(8).map(|email| email.as_str().into()),
@@ -1749,11 +1747,11 @@ impl SpecParser {
                         continue;
                     }
                     let Some(cap) = RE_PMB.captures(line) else {
-                        self.errors.push(Err::Others(eyre!("{}: Non-empty non-preamble line: {line}", 0))); // FIXME: what's the line number?
+                        self.errors.push(syntaxerr!(~InvalidLineExpectedPreamble(line.into())@consumer.span(older_pos..old_pos)));
                         continue;
                     };
                     if let Some(digitpos) = cap[1].find(['1', '2', '3', '4', '5', '6', '7', '8', '9', '0']) {
-                        let digit = cap[1][digitpos..].parse()?;
+                        let digit = cap[1][digitpos..].parse().expect("Cannot parse digits after preamble name");
                         self.add_list_preamble(&cap[1][..digitpos], digit, &cap[2])?;
                     } else if ["Source", "Patch"].contains(&&cap[1]) {
                         self.add_list_preamble(&cap[1], 0, &cap[2])?;
@@ -1812,7 +1810,7 @@ impl SpecParser {
         }
         if !self.errors.is_empty() {
             println!("{:#?}", self.errors);
-            return take(&mut self.errors).into_iter().fold(Err(eyre!("Cannot parse spec file")), color_eyre::Help::error);
+            return Err(Err::ParseFailErrs(take(&mut self.errors).into_boxed_slice()));
         }
         // NOTE: we are leaving changelog parsing for probably users of this lib
         // it's just markdown… and it doesn't really have to be markdown…
@@ -1847,7 +1845,7 @@ impl SpecParser {
         match name {
             "Source" => no_override_ins!(sources),
             "Patch" => no_override_ins!(patches),
-            _ => return Err(eyre!("Failed to match preamble `{name}{digit}` (value `{value}`)")),
+            _ => unreachable!("BUG: found list preamble `{name}{digit}:` without implmentation"),
         }
         Ok(())
     }
@@ -1898,7 +1896,7 @@ impl SpecParser {
                 space = false;
                 let Some(ch) = reader.next() else { break };
                 if !ch.is_ascii_alphabetic() {
-                    return Err(eyre!("Argument flag `-{ch}` in parameterized macro is not alphabetic"));
+                    syntaxerr!(BadFlagToParamMacro(ch)@reader.span(reader.pos-2..reader.pos));
                 }
                 let mut flag = String::new();
                 flag.push(ch);
@@ -1939,6 +1937,7 @@ impl SpecParser {
         }
     }
 
+    // FIXME: rewrite required, this is actually a mess and very inaccurate
     #[tracing::instrument(skip(self, def))]
     fn __paramm_inner(&mut self, def: &mut Consumer<impl Read>, raw_args: &str, flags: &[String], res: &mut String) -> ParseResult<()> {
         let start = def.pos;
@@ -1957,8 +1956,11 @@ impl SpecParser {
             return Ok(());
         }
         if let Some(content) = content.strip_suffix('*') {
+            // %{-content*}
+            //   ^^^^^^^^
+            // not length 2?
             if content.len() != 2 {
-                return Err(eyre!("Invalid macro param flag `%{{{content}}}`"));
+                syntaxerr!(BadFlagInCurlyInParamMacroDef(format!("{{{content}*}}").into())@def.span(start..def.pos));
             }
             let mut args = raw_args.split(' ');
             if !notflag {
@@ -1971,11 +1973,11 @@ impl SpecParser {
             return Ok(()); // no args after -f, add nothing.
         }
         if content.len() != 2 {
-            return Err(eyre!("Found `%-{content}` which is not a flag"));
+            syntaxerr!(BadFlagInCurlyInParamMacroDef(format!("{{{content}}}").into())@def.span(start..def.pos));
         }
         let flag = content.chars().last().unwrap();
         if !flag.is_ascii_alphabetic() {
-            return Err(eyre!("Invalid macro name `%-{flag}`"));
+            syntaxerr!(BadFlagInCurlyInParamMacroDef(content.into())@def.span(start..def.pos));
         }
         if flags.contains(&String::from(format!("{flag}"))) ^ notflag {
             res.push_str(expand);
@@ -2037,7 +2039,7 @@ impl SpecParser {
         Ok(())
     }
 
-    pub(crate) fn _find_macro_and_expand<R: Read>(&mut self, name: &str, reader: &mut Consumer<R>, out: &mut String) -> ParseResult<(), Err> {
+    pub(crate) fn _find_macro_and_expand<R: Read>(&mut self, name: &str, reader: &mut Consumer<R>, out: &mut String) -> ParseResult<()> {
         debug!("getting %{name}");
         let Some(def) = self.macros.get(name) else {
             return Err(Err::MacroNotFound(name.into()));
@@ -2096,16 +2098,12 @@ impl SpecParser {
         let shellcmd = chars.read_before_endbrace(Brace::Round)?;
         Err(match Command::new("sh").arg("-c").arg(&*shellcmd).output() {
             Ok(out) if out.status.success() => {
-                strout.push_str(core::str::from_utf8(&out.stdout)?.trim_end_matches('\n'));
+                strout.push_str(core::str::from_utf8(&out.stdout).map_err(|e| Err::ShellExpansionNonUtf8(shellcmd, e))?.trim_end_matches('\n'));
                 return Ok(());
             },
-            Ok(out) => eyre!("Shell expansion command did not succeed")
-                .note(out.status.code().map_or("No status code".into(), |c| format!("Status code: {c}")))
-                .section(std::string::String::from_utf8(out.stdout)?.header("Stdout:"))
-                .section(std::string::String::from_utf8(out.stderr)?.header("Stderr:")),
-            Err(e) => eyre!(e).wrap_err("Shell expansion failed"),
+            Ok(out) => Err::ShellExpansionFail { shellcmd, status_code: out.status.code(), stdout: out.stdout, stderr: out.stderr },
+            Err(e) => Err::ShellExpansionFailToExecute(shellcmd, e),
         })
-        .note(shellcmd)
     }
 
     /// Expand macros depending on `notflag`.
@@ -2147,7 +2145,7 @@ impl SpecParser {
     /// Parse the stuff after %, and determines `{[()]}`.
     /// FIXME: please REFACTOR me!!
     #[tracing::instrument(skip(self, chars))]
-    pub fn _start_parse_raw_macro<R: Read>(&mut self, out: &mut String, chars: &mut Consumer<R>) -> ParseResult<(), Err> {
+    pub fn _start_parse_raw_macro<R: Read>(&mut self, out: &mut String, chars: &mut Consumer<R>) -> ParseResult<()> {
         let (mut notflag, mut question, mut first) = (false, false, true);
         let mut macroname = String::new();
         loop {
@@ -2166,10 +2164,11 @@ impl SpecParser {
                     return Ok(());
                 },
                 '{' => {
+                    let start = chars.pos - 1;
                     // first read the flags
                     let ch = loop {
                         match chars.next() {
-                            None => return Err(eyre!("Unexpected EOF in %{{").into()),
+                            None => syntaxerr!(UnclosedBraces { quotes: vec![Brace::Curly] }@chars.span(start..chars.end)),
                             Some('!') => notflag = true,
                             Some('?') => question = true,
                             Some(ch) => break ch,

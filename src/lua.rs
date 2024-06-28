@@ -230,7 +230,7 @@ macro_rules! __lua {
                         Ok(())
                     })?,
                 )?;
-                lua.load(script).exec().map_err(|e| format!("Cannot execute script: {script}").into())?;
+                lua.load(script).exec()?;
             }
             drop(lua);
             Ok(Arc::try_unwrap(printout).expect("Cannot unwrap Arc for print() output in lua").into_inner())

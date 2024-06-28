@@ -2,11 +2,10 @@
 //!
 //! <https://rpm-software-management.github.io/rpm/manual/macros.html>
 use crate::{parse::SpecParser, util::Consumer};
-use color_eyre::eyre::eyre;
 use itertools::Itertools;
 use parking_lot::RwLock;
 use rpmspec_common::util::handle_line_skip;
-use rpmspec_common::PErr as PE;
+use rpmspec_common::{syntaxerr, PErr as PE};
 use smartstring::alias::String;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -50,6 +49,7 @@ impl From<&str> for MacroType {
     }
 }
 
+/// Helper macro to define RPM macros declaratively
 macro_rules! __internal_macros {
     ($(macro $m:ident($p:pat, $o:pat, $r:pat) $body:block )+) => {
         $(
@@ -69,6 +69,19 @@ macro_rules! __internal_macros {
     };
 }
 
+// TODO: export a macro similar to `__internal_macros!` that allows users of this crate to
+// define their own macros, possibly proc macro that one can do from module
+//
+//
+// ```
+// define_macros! {
+//   macro my_macro(p, o, r) {
+//      // do something
+//
+//   }
+//
+// }
+
 // you will see some `#[rustfmt::skip]`, this is related to
 // https://github.com/rust-lang/rustfmt/issues/5866
 __internal_macros!(
@@ -79,10 +92,10 @@ __internal_macros!(
         let def = def.trim_start();
         #[rustfmt::skip]
         let Some((name, _)) = def.split_once(' ') else {
-            return Err(eyre!("%define: Expected 2 arguments").into());
+            syntaxerr!(BadArgCount { expected: &[2], found: def.chars().filter(|&c| c == ' ').count() }@r.current_span());
         };
         let (name, param): (String, bool) = name.strip_suffix("()").map_or_else(|| (name.into(), false), |x| (x.into(), true));
-        let csm = r.range(pos + 1 + name.len()..r.pos).ok_or_else(|| eyre!("%define: cannot unwind Consumer"))?;
+        let csm = r.range(pos + 1 + name.len()..r.pos).expect("%define: cannot unwind Consumer");
         p.define_macro(name, &csm, param, csm.end - csm.pos);
         Ok(())
     }
@@ -90,7 +103,7 @@ __internal_macros!(
         define(p, o, r)
     }
     macro undefine(p, _, r) {
-        p.macros.remove(&*r.read_til_eot().unwrap());
+        p.macros.remove(&*r.read_til_eot()?);
         Ok(())
     }
     macro load(p, _, r) {
@@ -107,7 +120,7 @@ __internal_macros!(
         // It will skip `Arc::try_unwrap()` inside `_rp_macro()` anyway since `new_reader.r` is
         // `None`. This should be safe.
 
-        let new_reader = r.range(r.pos..r.end).expect("Cannot wind Consumer in %expand");
+        let new_reader = r.range(r.pos..r.end).expect("%expand: cannot unwind Consumer");
 
         // SAFETY:
         // This is a valid downcast because `new_reader.r` is `None` given
@@ -270,7 +283,7 @@ __internal_macros!(
             file_format::FileFormat::SevenZip => "7zip x ",
             file_format::FileFormat::Zstandard => "zstd -dc ",
             file_format::FileFormat::TapeArchive if path.extension() == Some(std::ffi::OsStr::new("gem")) => "gem unpack ",
-            _ => return Err(eyre!("Unexpected file format: {fmt:?}").into()),
+            _ => return Err(PE::InternalMacroEmittedError(format!("Unexpected file format: {fmt:?}").into())),
         });
         o.push_str(&pathstr);
         Ok(())
@@ -282,7 +295,7 @@ __internal_macros!(
     macro getconfidir(_, o, _) {
         let res = std::env::var("RPM_CONFIGDIR");
         if let Err(std::env::VarError::NotUnicode(s)) = res {
-            return Err(eyre!("%{{getconfdir}} failed: While grabbing env var `RPM_CONFIGDIR`: Non-unicode OsString {s:?}").into());
+            return Err(PE::InternalMacroEmittedError(format!("%{{getconfdir}} failed: While grabbing env var `RPM_CONFIGDIR`: Non-unicode OsString {s:?}").into()));
         }
         o.push_str(res.as_ref().map(|x| &**x).unwrap_or("/usr/lib/rpm"));
         Ok(())
@@ -292,7 +305,7 @@ __internal_macros!(
         match std::env::var(&*name) {
             Ok(x) => o.push_str(&x),
             Err(std::env::VarError::NotPresent) => {},
-            Err(std::env::VarError::NotUnicode(s)) => return Err(eyre!("%{{getenv:{name}}} failed: Non-unicode OsString {s:?}").into()),
+            Err(std::env::VarError::NotUnicode(s)) => return Err(PE::InternalMacroEmittedError(format!("%{{getenv:{name}}} failed: Non-unicode OsString {s:?}").into())),
         }
         Ok(())
     }

@@ -5,6 +5,7 @@ use std::{fmt::Display, num::ParseIntError, path::Path, sync::Arc};
 
 use crate::{expr::Expression, util::Brace};
 use chumsky::prelude::Simple;
+use lazy_format::lazy_format as lzf;
 use smartstring::alias::String;
 use thiserror::Error;
 
@@ -31,10 +32,6 @@ pub enum SpecErr {
     #[error("Invalid package architecture: {arch}")]
     InvalidPackageArch { arch: String, offending: Option<String> },
 
-    #[error("Invalid expression: {0}")]
-    #[deprecated = "Please use the one in ParseErr"]
-    InvalidExpression(#[from] ExprErr),
-
     #[error("Wrong number of arguments: expected one of {expected:?}, found {found}")]
     BadArgCount { expected: &'static [usize], found: usize },
     #[error("Bad mode: `{mode}`; expected integer")]
@@ -43,6 +40,8 @@ pub enum SpecErr {
     BadModifier { modifier: String, id: &'static str },
     #[error("Unknown %files directive: %{0}")]
     UnknownFilesDirective(String),
+    #[error("Invalid changelog date: {0}")]
+    InvalidChangelogDate(chrono::ParseError),
 
     #[error("Declared macro has empty/no definition in macro definition file")]
     EmptyMacroDefinition { name: String, file: std::path::PathBuf },
@@ -65,6 +64,16 @@ pub enum SpecErr {
     NoMainNameToInferSubpkgName(String),
     #[error("Declaring subpackage with taken name: `{0}`")]
     RedeclareSubpkg(String),
+
+    #[error("Expected type bool, found expression `{value}` while parsing preamble `{preamble}:`")]
+    PreambleNotBool { value: String, preamble: &'static str, err: std::str::ParseBoolError },
+    #[error("Expected preamble, found non-empty line: `{0}`")]
+    InvalidLineExpectedPreamble(String),
+
+    #[error("Bad flag passed to parameterized macro because the flag starts with a non-ascii-alphabetic character `{0}`")]
+    BadFlagToParamMacro(char),
+    #[error("Bad flag in definition of parameterized macro: {0}")]
+    BadFlagInCurlyInParamMacroDef(String),
 }
 
 /// Position information (char offset)
@@ -93,10 +102,9 @@ impl Span {
 
 impl Display for Span {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // let filename: Box<dyn Display> = self.filename.map_or(Box::new("<unknown>"), |f| Box::new(f.display()));
-        // let Self { line_start, col_start, .. } = self;
-        // f.write_fmt(format_args!("{filename}:{line_start}:{col_start}"))
-        todo!()
+        let Self { start, end, kind, filename } = self;
+        let filename: Box<dyn Display> = filename.as_ref().map_or(Box::new("<unknown>"), |f| Box::new(f.display()));
+        f.write_fmt(format_args!("{filename}:{start}-{end} as character positions ({kind})"))
     }
 }
 
@@ -120,9 +128,9 @@ impl Display for SpanType {
     }
 }
 
-pub trait DisplayDebug: Display + std::fmt::Debug {}
+pub trait DisplayDebug: Display + std::fmt::Debug + Send + Sync {}
 
-impl<T: Display + std::fmt::Debug> DisplayDebug for T {}
+impl<T: Display + std::fmt::Debug + Send + Sync> DisplayDebug for T {}
 
 /// Errors for some special parsing issues
 #[derive(Debug, Error)]
@@ -165,21 +173,35 @@ pub enum ParseErr {
     #[deprecated = "Please implement a specific error type!!"]
     Others(String),
 
+    #[error("Shell expansion %({0}) gives non-UTF-8 string: {1}")]
+    ShellExpansionNonUtf8(String, std::str::Utf8Error),
+    #[error("Shell expansion %({shellcmd}) failed (status code {})", status_code.map_or(Box::new("unknown") as Box<dyn Display>, |code| Box::new(lzf!("{code}"))))]
+    ShellExpansionFail { shellcmd: String, status_code: Option<i32>, stdout: Vec<u8>, stderr: Vec<u8> },
+    #[error("Shell expansion %({0}) failed to execute: {1}")]
+    ShellExpansionFailToExecute(String, std::io::Error),
+
     /// A Lua error
     #[error("Lua error: {0}")]
     LuaError(#[from] mlua::Error),
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+    #[error("Encounter non-fatal errors while parsing spec: {0:?}")]
+    ParseFailErrs(Box<[Self]>),
+
+    #[error("Invalid file format in %uncompress")]
+    InternalMacroEmittedError(String),
 }
 
 impl From<&str> for ParseErr {
     fn from(value: &str) -> Self {
+        #[allow(deprecated)]
         Self::Others(value.into())
     }
 }
 
 impl From<std::string::String> for ParseErr {
     fn from(value: std::string::String) -> Self {
+        #[allow(deprecated)]
         Self::Others(value.into())
     }
 }
@@ -205,8 +227,11 @@ impl Clone for ParseErr {
             move occurs because value has type `std::io::Error`, which does not implement the `Copy` trait            */
             // Self::IoError(e) => Self::IoError(e),
             Self::LuaError(e) => Self::LuaError(e.clone()),
+            #[allow(deprecated)]
             Self::Others(r) => {
                 tracing::warn!("Cloning ParserError::Others(color_eyre::Report):\n{r:#}");
+                // ignore deprecation
+                #[allow(deprecated)]
                 Self::Others(r.clone())
             },
             _ => unimplemented!(),

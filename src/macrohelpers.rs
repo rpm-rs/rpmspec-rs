@@ -93,7 +93,7 @@ macro_rules! preamble_maker {
         $rpm.[<$field:lower>] = Some($value);
     }};
     (@g($self:ident $rpm:ident $name:ident $value:ident $offset:ident $csm:ident) $field:ident: bool) => { ::paste::paste! {
-        $rpm.[<$field:lower>] = $value.parse()?;
+        $rpm.[<$field:lower>] = $value.parse().map_err(|err| syntaxerr!(~PreambleNotBool { value: $value.into(), preamble: stringify!($field), err }@$csm.current_span()))?;
         return Ok(());
     }};
     (@g($self:ident $rpm:ident $name:ident $value:ident $offset:ident $csm:ident) $field:ident: Strings) => { ::paste::paste! {
@@ -101,7 +101,7 @@ macro_rules! preamble_maker {
         return Ok(());
     }};
     (@g($self:ident $rpm:ident $name:ident $value:ident $offset:ident $csm:ident) Epoch: u32) => {
-        $rpm.epoch = $value.parse().map_err(|e: ::std::num::ParseIntError| eyre!(e).wrap_err("Failed to decode epoch to int"))?;
+        $rpm.epoch = $value.parse().map_err(|err| syntaxerr!(~InvalidPackageEpoch { epoch: $value, err }@$csm.current_span()))?;
         return Ok(());
     };
     (@g($self:ident $rpm:ident $name:ident $value:ident $offset:ident $csm:ident) $field:ident: Pkgs) => { ::paste::paste! {

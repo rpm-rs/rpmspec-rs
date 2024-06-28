@@ -20,4 +20,5 @@ tracing = "0.1.29"
 # color-eyre = "0.6.2"
 parking_lot = "0.12.1"
 mlua = { version = "0.9.8", features = ["luajit"] }
-
+lazy_format = "2.0.0"
+chrono = { version = "0.4.38", default-features = false }
