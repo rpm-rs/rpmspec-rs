@@ -1378,7 +1378,7 @@ impl SpecParser {
                 csm.until(|ch| !ch.is_whitespace());
                 let offset = csm.pos; // start of definition
                 trace!(pos = csm.pos, "parsing macro definition");
-                csm.skip_til_eot()?; // eot is end of definition
+                csm.skip_til_eot_for_curly()?; // eot is end of definition
                 trace!(pos = csm.pos, "finished parsing macro definition");
                 trace!(?name, "Insert macro");
                 let len = csm.pos - offset - 1;

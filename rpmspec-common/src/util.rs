@@ -222,6 +222,82 @@ impl<R: Read + ?Sized> Consumer<R> {
         }
         Ok(())
     }
+    pub fn skip_til_eot_for_curly(&mut self) -> color_eyre::Result<()> {
+        let mut depth = 0;
+        let mut backslash = false;
+        let mut line_start = true;
+        'main: while let Some(ch) = self.next() {
+            if ch == '\\' {
+                backslash = !backslash;
+                continue;
+            }
+            if ch == '\n' {
+                line_start = true;
+                if backslash {
+                    backslash = false;
+                    continue;
+                }
+                if depth == 0 {
+                    break;
+                }
+                continue;
+            }
+            if ch.is_whitespace() {
+                // make backslash unchanged
+                continue;
+            }
+            if backslash {
+                // ignore current char because it's escaped
+                backslash = false;
+                continue;
+            }
+            if line_start && ch == '#' {
+                // skip comment
+                // we'll say this assumption holds if there is only
+                // whitespace before the hashtag for this line
+                self.until(|ch| ch == '\n');
+                continue;
+            }
+            if line_start && ch == '-' && self.peek() == Some('-') {
+                self.next().unwrap();
+                if Some(' ') == self.peek() {
+                    // assume this is a lua comment…?
+                    // we'll say this assumption holds if there is only
+                    // whitespace before `-- ` for this line
+                    // FIXME: should do the parsing in a better way? This is a horrible assumption!
+                    self.until(|ch| ch == '\n');
+                    continue;
+                }
+            }
+            line_start = false;
+            if ch == '{' {
+                depth += 1;
+                continue;
+            }
+            if ['"', '\''].contains(&ch) {
+                let quote = ch;
+                // loop until found matching quote
+                while let Some(ch) = self.next() {
+                    if ch == '\\' {
+                        self.next();
+                        continue;
+                    }
+                    if ch == quote {
+                        continue 'main;
+                    }
+                }
+                return Err(eyre!("EOF while in {quote}string{quote}"));
+            }
+            if ch == '}' {
+                if depth == 0 {
+                    self.back('}');
+                    break;
+                }
+                continue;
+            }
+        }
+        Ok(())
+    }
     pub fn read_til_eot(&mut self) -> color_eyre::Result<parking_lot::MappedRwLockReadGuard<str>> {
         let start = self.pos;
         self.skip_til_eot()?;
