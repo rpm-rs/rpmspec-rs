@@ -83,7 +83,7 @@ __internal_macros!(
         };
         let (name, param): (String, bool) = name.strip_suffix("()").map_or_else(|| (name.into(), false), |x| (x.into(), true));
         let csm = r.range(pos + 1 + name.len()..r.pos).ok_or_else(|| eyre!("%define: cannot unwind Consumer"))?;
-        p.define_macro(name, &csm, param, csm.end - csm.pos);
+        p.define_macro(name, &csm, param, csm.end - csm.pos - r.peek().map_or(0, |_| 1)); // remove \n only if not EOF
         Ok(())
     }
     macro global(p, o, r) {
