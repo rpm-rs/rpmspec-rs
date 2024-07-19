@@ -13,13 +13,13 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use core::ffi::CStr;
 use mlua::{ExternalError, ExternalResult, Lua, Result, Value};
 use parking_lot::RwLock;
+use rpmspec_common::ParseResult;
 use std::{
     ffi::CString,
     io::{Read, Seek, Write},
     str::FromStr,
     sync::Arc,
 };
-use rpmspec_common::ParseResult;
 
 #[derive(Default)]
 enum RpmFileIOType {

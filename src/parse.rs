@@ -1933,7 +1933,7 @@ impl SpecParser {
         if content.len() != 2 {
             syntaxerr!(BadFlagInCurlyInParamMacroDef(format!("{{{content}}}").into())@def.span(start..def.pos));
         }
-        let flag = content.chars().last().unwrap();
+        let flag = content.chars().last().expect("content is empty while parsing flag in __paramm_inner");
         if !flag.is_ascii_alphabetic() {
             syntaxerr!(BadFlagInCurlyInParamMacroDef(content.into())@def.span(start..def.pos));
         }
@@ -2031,6 +2031,7 @@ impl SpecParser {
                     r: take(&mut reader.r).map(Arc::try_unwrap).map(|r| {
                         let Ok(bufreader) = r.map(RwLock::into_inner) else { panic!("Cannot unwrap Arc for Consumer reader") };
                         // then we get the inner `R`, upcast it, then rebuild everything
+                        #[allow(clippy::arc_with_non_send_sync)]
                         Arc::new(RwLock::new(BufReader::new(bufreader.into_inner() as _)))
                     }),
                     end: reader.end,
@@ -2137,12 +2138,12 @@ impl SpecParser {
                     chars.back(ch);
                     let start = chars.pos;
                     let content = chars.read_before_endbrace(Brace::Curly)?;
-                    let mut inner_chars = chars.range(start..chars.pos - 1).unwrap();
+                    let mut inner_chars = chars.range(start..chars.pos - 1).expect("Cannot unwind Consumer");
                     let mut name = String::new();
                     inner_chars.read_before(&mut name, |ch| ch.is_whitespace() || ch == ':');
                     if inner_chars.pos == inner_chars.end {
                         // content is macroname
-                        return Ok(self._macro_expand_flagproc(question, notflag, chars, &content, out, true)?);
+                        return self._macro_expand_flagproc(question, notflag, chars, &content, out, true);
                     }
                     inner_chars.next(); // get after the separator
                     if question {
@@ -2159,7 +2160,7 @@ impl SpecParser {
                     chars.skip_til_endbrace(Brace::Square)?;
                     return self.parse_expr(out, &mut chars.range(start..chars.pos - 1).expect("Cannot unwind consumer to `%[...]`"));
                 },
-                '(' => return Ok(Self::__rawm_shellexpand(out, chars)?),
+                '(' => return Self::__rawm_shellexpand(out, chars),
                 '!' => notflag = true,
                 '?' => question = true,
                 _ if firstc.is_ascii_alphabetic() || firstc == '_' => {
@@ -2325,11 +2326,11 @@ mod tests {
     #[test]
     fn simple_query() {
         let mut pkgs = vec![];
-        Package::add_simple_query::<File>(&mut Default::default(), &mut pkgs, "hai, bai some(stuff-1.0)").unwrap();
+        Package::add_simple_query::<File>(&Consumer::default(), &mut pkgs, "hai, bai some(stuff-1.0)").unwrap();
         assert_eq!(pkgs, vec![Package::new("hai".into()), Package::new("bai".into()), Package::new("some(stuff-1.0)".into())]);
-        let _ = Package::add_simple_query::<File>(&mut Default::default(), &mut pkgs, "bad!").unwrap_err();
-        let _ = Package::add_simple_query::<File>(&mut Default::default(), &mut pkgs, "also(bad").unwrap_err();
-        let _ = Package::add_simple_query::<File>(&mut Default::default(), &mut pkgs, "not-good >= 1.0").unwrap_err();
+        let _ = Package::add_simple_query::<File>(&Consumer::default(), &mut pkgs, "bad!").unwrap_err();
+        let _ = Package::add_simple_query::<File>(&Consumer::default(), &mut pkgs, "also(bad").unwrap_err();
+        let _ = Package::add_simple_query::<File>(&Consumer::default(), &mut pkgs, "not-good >= 1.0").unwrap_err();
     }
 
     #[test]

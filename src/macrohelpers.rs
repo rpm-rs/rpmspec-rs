@@ -1,4 +1,3 @@
-
 /// Populate preamble-related stuff
 macro_rules! preamble_maker {
     (
