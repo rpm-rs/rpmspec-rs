@@ -1,5 +1,4 @@
 //! Utilities used in `rpmspec`.
-use color_eyre::eyre::eyre;
 use parking_lot::RwLock;
 use smartstring::alias::String;
 use std::{
@@ -7,6 +6,8 @@ use std::{
     path::Path,
     sync::Arc,
 };
+
+use crate::ParseResult;
 
 #[macro_export]
 macro_rules! opt {
@@ -24,6 +25,16 @@ pub enum Brace {
     Curly,
     Square,
     Round,
+}
+
+impl std::fmt::Display for Brace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Curly => "`{curly}`",
+            Self::Square => "`[square]`",
+            Self::Round => "`(round)`",
+        })
+    }
 }
 
 impl Brace {
@@ -144,7 +155,7 @@ impl<R: Read + ?Sized> Consumer<R> {
     /// - it's not inside quotes anymore
     ///
     /// "skip until end of…thing?"
-    pub fn skip_til_eot(&mut self) -> color_eyre::Result<()> {
+    pub fn skip_til_eot(&mut self) -> ParseResult<()> {
         let mut ps = vec![];
         let mut backslash = false;
         let mut line_start = true;
@@ -208,102 +219,26 @@ impl<R: Read + ?Sized> Consumer<R> {
                         continue 'main;
                     }
                 }
-                return Err(eyre!("EOF while in {quote}string{quote}"));
+                return Err(format!("EOF while in {quote}string{quote}").into());
             }
             if let Some(close) = Brace::close_ch(ch) {
                 let Some(open) = ps.pop() else {
-                    return Err(eyre!("Unexpected closing brace `{ch}`"));
+                    return Err(format!("Unexpected closing brace `{ch}`").into());
                 };
                 if open != close {
-                    return Err(eyre!("Expected closing {open:?}, found `{ch}`"));
+                    return Err(format!("Expected closing {open:?}, found `{ch}`").into());
                 }
                 continue;
             }
         }
         Ok(())
     }
-    pub fn skip_til_eot_for_curly(&mut self) -> color_eyre::Result<()> {
-        let mut depth = 0;
-        let mut backslash = false;
-        let mut line_start = true;
-        'main: while let Some(ch) = self.next() {
-            if ch == '\\' {
-                backslash = !backslash;
-                continue;
-            }
-            if ch == '\n' {
-                line_start = true;
-                if backslash {
-                    backslash = false;
-                    continue;
-                }
-                if depth == 0 {
-                    break;
-                }
-                continue;
-            }
-            if ch.is_whitespace() {
-                // make backslash unchanged
-                continue;
-            }
-            if backslash {
-                // ignore current char because it's escaped
-                backslash = false;
-                continue;
-            }
-            if line_start && ch == '#' {
-                // skip comment
-                // we'll say this assumption holds if there is only
-                // whitespace before the hashtag for this line
-                self.until(|ch| ch == '\n');
-                continue;
-            }
-            if line_start && ch == '-' && self.peek() == Some('-') {
-                self.next().unwrap();
-                if Some(' ') == self.peek() {
-                    // assume this is a lua comment…?
-                    // we'll say this assumption holds if there is only
-                    // whitespace before `-- ` for this line
-                    // FIXME: should do the parsing in a better way? This is a horrible assumption!
-                    self.until(|ch| ch == '\n');
-                    continue;
-                }
-            }
-            line_start = false;
-            if ch == '{' {
-                depth += 1;
-                continue;
-            }
-            if ['"', '\''].contains(&ch) {
-                let quote = ch;
-                // loop until found matching quote
-                while let Some(ch) = self.next() {
-                    if ch == '\\' {
-                        self.next();
-                        continue;
-                    }
-                    if ch == quote {
-                        continue 'main;
-                    }
-                }
-                return Err(eyre!("EOF while in {quote}string{quote}"));
-            }
-            if ch == '}' {
-                if depth == 0 {
-                    self.back('}');
-                    break;
-                }
-                continue;
-            }
-        }
-        Ok(())
-    }
-    pub fn read_til_eot(&mut self) -> color_eyre::Result<parking_lot::MappedRwLockReadGuard<str>> {
+    pub fn read_til_eot(&mut self) -> ParseResult<parking_lot::MappedRwLockReadGuard<str>> {
         let start = self.pos;
         self.skip_til_eot()?;
         Ok(self.must_range_str(start..self.pos))
     }
-    pub fn skip_til_endbrace(&mut self, brace: Brace) -> color_eyre::Result<()> {
+    pub fn skip_til_endbrace(&mut self, brace: Brace) -> ParseResult<()> {
         let mut ps = vec![];
         let mut backslash = false;
         'main: while let Some(ch) = self.next() {
@@ -332,27 +267,51 @@ impl<R: Read + ?Sized> Consumer<R> {
                         continue 'main;
                     }
                 }
-                return Err(eyre!("EOF while in {quote}string{quote}"));
+                return Err(format!("EOF while in {quote}string{quote}").into());
             }
             if let Some(close) = Brace::close_ch(ch) {
                 let Some(open) = ps.pop() else {
                     if close == brace {
                         return Ok(());
                     }
-                    return Err(eyre!("Unexpected closing brace `{ch}`"));
+                    return Err(format!("Unexpected closing brace `{ch}`").into());
                 };
                 if open != close {
-                    return Err(eyre!("Expected closing {open:?}, found `{ch}`"));
+                    return Err(format!("Expected closing {open:?}, found `{ch}`").into());
                 }
                 continue;
             }
         }
-        Err(eyre!("Unexpected EOF"))
+        Err("Unexpected EOF".into())
     }
-    pub fn read_before_endbrace(&mut self, brace: Brace) -> color_eyre::Result<String> {
+    pub fn read_before_endbrace(&mut self, brace: Brace) -> ParseResult<String> {
         let start = self.pos;
         self.skip_til_endbrace(brace)?;
         Ok(self.range_string(start..self.pos - 1).unwrap())
+    }
+
+    /// Convert the range (byte offset) into a Span (char offset)
+    ///
+    /// This operation is expensive (`O(n)`).
+    pub fn span(&self, range: std::ops::Range<usize>) -> crate::error::Span {
+        let mut span = crate::error::Span::default();
+        let mut in_span = false;
+        for (cpos, (bpos, _)) in self.s.read().char_indices().enumerate() {
+            if !in_span && bpos >= range.start {
+                span.start(cpos);
+                in_span = true;
+            }
+            if bpos >= range.end {
+                span.end(cpos);
+                break;
+            }
+        }
+        span
+    }
+
+    /// Get the entire span that the consumer is allowed to read from
+    pub fn current_span(&self) -> crate::error::Span {
+        self.span(self.pos..self.end)
     }
 }
 
@@ -379,7 +338,7 @@ impl<R: ?Sized + Read> Iterator for Consumer<R> {
         if nbyte == 0 {
             return None; // EOF
         }
-        s.push_str(core::str::from_utf8(&buf[..nbyte]).map_err(|e| color_eyre::eyre::eyre!("cannot parse buffer `{buf:?}`: {e}")).ok()?);
+        s.push_str(core::str::from_utf8(&buf[..nbyte]).map_err(|e| format!("cannot parse buffer `{buf:?}`: {e}")).ok()?);
         let Some(c) = s.get(self.pos..).and_then(|substr| substr.chars().next()) else { panic!("Consumer has no `s[{}]` after reading from `r`, where `s` is: {s}", self.pos) };
         drop(s);
         self.pos += c.len_utf8();

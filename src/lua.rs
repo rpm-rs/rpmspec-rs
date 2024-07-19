@@ -13,6 +13,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use core::ffi::CStr;
 use mlua::{ExternalError, ExternalResult, Lua, Result, Value};
 use parking_lot::RwLock;
+use rpmspec_common::ParseResult;
 use std::{
     ffi::CString,
     io::{Read, Seek, Write},
@@ -208,7 +209,7 @@ macro_rules! __lua {
                 )+
             }
         )+
-        pub(crate) fn run(rpmparser: &Arc<RwLock<SpecParser>>, script: &str) -> color_eyre::Result<String> {
+        pub(crate) fn run(rpmparser: &Arc<RwLock<SpecParser>>, script: &str) -> ParseResult<String> {
             let lua = Lua::new();
             let printout = Arc::new(RwLock::new(String::new()));
             {
@@ -229,7 +230,7 @@ macro_rules! __lua {
                         Ok(())
                     })?,
                 )?;
-                lua.load(script).exec().map_err(|e| color_eyre::eyre::eyre!("Cannot execute script: {script}").wrap_err(e))?;
+                lua.load(script).exec()?;
             }
             drop(lua);
             Ok(Arc::try_unwrap(printout).expect("Cannot unwrap Arc for print() output in lua").into_inner())

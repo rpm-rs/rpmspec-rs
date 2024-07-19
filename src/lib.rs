@@ -25,7 +25,7 @@
 #![warn(clippy::missing_panics_doc)]
 #![warn(clippy::missing_safety_doc)]
 #![warn(clippy::unwrap_used)]
-#![warn(clippy::expect_used)]
+// #![warn(clippy::expect_used)]
 #![warn(clippy::format_push_string)]
 #![warn(clippy::get_unwrap)]
 #![warn(clippy::format_push_string)]
