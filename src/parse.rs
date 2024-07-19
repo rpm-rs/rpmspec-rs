@@ -172,7 +172,7 @@ impl Package {
     /// # Errors
     /// An error is returned if and only if there exists an invalid character that is
     /// not ascii-alphanumeric and not in [`PKGNAMECHARSET`].
-    pub fn add_simple_query(pkgs: &mut Vec<Self>, query: &str) -> ParseResult<()> {
+    pub fn add_simple_query<R: Read>(csm: &mut Consumer<R>, pkgs: &mut Vec<Self>, query: &str) -> ParseResult<()> {
         // TODO: this function should get a consumer!
         let mut last = String::new();
         let mut quotes = vec![];
@@ -180,11 +180,9 @@ impl Package {
         for ch in chrs {
             if ch == ' ' || ch == ',' {
                 if !quotes.is_empty() {
-                    return Err(Err::InvalidSyntax {
-                        span: todo!(),
-                        err: SpecErr::UnclosedBraces { quotes },
-                        notes: vec![(todo!(), Box::new(format!("Reading query {query}"))), (todo!(), Box::new(lzf!("Parsing {last}"))), (todo!(), Box::new(lzf!("Deliminator {ch}")))],
-                    });
+                    // syntaxerr!(UnclosedBraces{ quotes }@csm.current_span()=>[format!("Reading query {query}"), lzf!("Parsing {last}"), lzf!("Deliminator {ch}")])
+                    last.push(ch);
+                    continue;
                 }
                 if !last.is_empty() {
                     pkgs.push(Self::new(take(&mut last)));
@@ -192,38 +190,21 @@ impl Package {
                 continue;
             }
             if !ch.is_ascii_alphanumeric() && !PKGNAMECHARSET.contains(ch) {
-                return Err(Err::InvalidSyntax {
-                    span: todo!(),
-                    err: SpecErr::InvalidPackageName { name: last, offending: Some(ch) },
-                    notes: vec![
-                        (todo!(), Box::new(lzf!("Invalid character `{ch}` in package name"))),
-                        (todo!(), Box::new(format!("Reading query `{query}`"))),
-                        (todo!(), Box::new(lzf!("Parsing `{last}`"))),
-                        (todo!(), Box::new(lzf!("Only ascii alphanumeric characters and `{PKGNAMECHARSET}` are valid"))), // Hint
-                    ],
-                });
+                syntaxerr!(InvalidPackageName { name: last.clone(), offending: Some(ch) }@csm.current_span()=>[lzf!("Invalid character `{ch}` in package name"), format!("Reading query `{query}`"), lzf!("Parsing `{last}`"), lzf!("Only ascii alphanumeric characters and `{PKGNAMECHARSET}` are valid")]);
             }
             if let Some(brace) = Brace::open_ch(ch) {
                 quotes.push(brace);
             } else if let Some(brace) = Brace::close_ch(ch) {
                 match quotes.pop() {
                     Some(q) if q == brace => {},
-                    Some(expected) => return Err(Err::InvalidSyntax { span: todo!(), err: SpecErr::UnmatchedBrace { expected, found: brace }, notes: vec![] }),
-                    None => return Err(Err::InvalidSyntax { span: todo!(), err: SpecErr::UnexpectedClosingBrace(brace), notes: vec![] }),
+                    Some(expected) => syntaxerr!(UnmatchedBrace { expected, found: brace }@csm.current_span()),
+                    None => syntaxerr!(UnexpectedClosingBrace(brace)@csm.current_span()),
                 }
             }
             last.push(ch);
         }
         if !quotes.is_empty() {
-            return Err(Err::InvalidSyntax {
-                span: todo!(),
-                err: SpecErr::UnclosedBraces { quotes },
-                notes: vec![
-                    (todo!(), Box::new(format!("Reading query `{query}`"))),
-                    (todo!(), Box::new(lzf!("Parsing {last}"))),
-                    (todo!(), Box::new(lzf!("Unexpected EOL/EOF"))), // Warn
-                ],
-            });
+            syntaxerr!(UnclosedBraces { quotes }@csm.current_span()=>[format!("Reading query `{query}`"), lzf!("Parsing {last}"), lzf!("Unexpected EOL/EOF")]);
         }
         if !last.is_empty() {
             pkgs.push(Self::new(last));
@@ -269,7 +250,7 @@ impl Package {
     /// assert_eq!(pkgs, vec![hai, foo, bai, another]);
     /// # Ok::<(), color_eyre::Report>(())
     /// ```
-    pub fn add_query(pkgs: &mut Vec<Self>, query: &str) -> ParseResult<()> {
+    pub fn add_query<R: Read>(csm: &mut Consumer<R>, pkgs: &mut Vec<Self>, query: &str) -> ParseResult<()> {
         // TODO: this function should get a consumer!
         let query = query.trim(); // just in case
         if query.is_empty() {
@@ -295,15 +276,7 @@ impl Package {
                 break;
             }
             if !ch.is_ascii_alphanumeric() && !PKGNAMECHARSET.contains(ch) {
-                return Err(Err::InvalidSyntax {
-                    span: todo!(),
-                    err: SpecErr::InvalidPackageName { name: name.clone(), offending: Some(ch) },
-                    notes: vec![(todo!(), Box::new(format!("Reading query {query}"))), (todo!(), Box::new(lzf!("Parsing {name}")))],
-                });
-                // return Err(eyre!("Invalid character `{ch}` in package name")
-                //     .note(format!("Reading query `{query}`"))
-                //     .note(lzf!("Parsing `{name}`"))
-                //     .suggestion(lzf!("Only ascii alphanumeric characters and `{PKGNAMECHARSET}` are valid")));
+                syntaxerr!(InvalidPackageName { name: name.clone(), offending: Some(ch) }@csm.current_span()=>[format!("Reading query {query}"), lzf!("Parsing {name}")]);
             }
             name.push(ch);
         }
@@ -314,7 +287,7 @@ impl Package {
                 warn!(query, "Trailing comma in package query");
                 return Ok(());
             }
-            return Self::add_query(pkgs, rest);
+            return Self::add_query(csm, pkgs, rest);
         }
         if name.is_empty() {
             // either a bug or trailing commas
@@ -328,7 +301,7 @@ impl Package {
             if rest.is_empty() {
                 return Ok(());
             }
-            return Self::add_query(pkgs, &rest);
+            return Self::add_query(csm, pkgs, &rest);
         };
         pkg.condition = PkgQCond::from_str(&caps[1])?;
         if let Some(epoch) = caps.get(2) {
@@ -347,9 +320,9 @@ impl Package {
                     continue;
                 }
                 if ch == ',' {
-                    return Self::add_query(pkgs, chrs.collect::<String>().trim_start());
+                    return Self::add_query(csm, pkgs, chrs.collect::<String>().trim_start());
                 }
-                return Self::add_query(pkgs, &format!("{ch}{}", chrs.collect::<String>()));
+                return Self::add_query(csm, pkgs, &format!("{ch}{}", chrs.collect::<String>()));
             }
         }
         Ok(())
@@ -1365,12 +1338,12 @@ impl SpecParser {
     ///
     /// # Panics
     /// - [`RPMSection::Package`] specified in `parser.section` doesn't exists in `rpm.packages`
-    pub fn parse_requires(&mut self, sline: &str) -> ParseResult<bool> {
+    pub fn parse_requires(&mut self, sline: &str, csm: &mut Consumer<impl Read>) -> ParseResult<bool> {
         let Some(caps) = RE_REQ.captures(sline) else {
             return Ok(false);
         };
         let mut pkgs = vec![];
-        Package::add_query(&mut pkgs, caps[2].trim())?;
+        Package::add_query(csm, &mut pkgs, caps[2].trim())?;
         let modifiers = if caps.len() == 2 { &caps[2] } else { "none" };
         for modifier in modifiers.split(',') {
             let modifier = modifier.trim();
@@ -1743,7 +1716,7 @@ impl SpecParser {
             match self.section {
                 RPMSection::Global | RPMSection::Package(_) => {
                     // Check for Requires special preamble syntax first
-                    if self.parse_requires(line)? {
+                    if self.parse_requires(line, &mut consumer.range(older_pos..consumer.pos).expect("Cannot unwind Consumer"))? {
                         continue;
                     }
                     let Some(cap) = RE_PMB.captures(line) else {
@@ -2367,11 +2340,11 @@ mod tests {
     #[test]
     fn simple_query() {
         let mut pkgs = vec![];
-        Package::add_simple_query(&mut pkgs, "hai, bai some(stuff-1.0)").unwrap();
+        Package::add_simple_query::<File>(&mut Default::default(), &mut pkgs, "hai, bai some(stuff-1.0)").unwrap();
         assert_eq!(pkgs, vec![Package::new("hai".into()), Package::new("bai".into()), Package::new("some(stuff-1.0)".into())]);
-        let _ = Package::add_simple_query(&mut pkgs, "bad!").unwrap_err();
-        let _ = Package::add_simple_query(&mut pkgs, "also(bad").unwrap_err();
-        let _ = Package::add_simple_query(&mut pkgs, "not-good >= 1.0").unwrap_err();
+        let _ = Package::add_simple_query::<File>(&mut Default::default(), &mut pkgs, "bad!").unwrap_err();
+        let _ = Package::add_simple_query::<File>(&mut Default::default(), &mut pkgs, "also(bad").unwrap_err();
+        let _ = Package::add_simple_query::<File>(&mut Default::default(), &mut pkgs, "not-good >= 1.0").unwrap_err();
     }
 
     #[test]

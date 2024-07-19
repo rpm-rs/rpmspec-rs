@@ -1,3 +1,4 @@
+
 /// Populate preamble-related stuff
 macro_rules! preamble_maker {
     (
@@ -93,7 +94,7 @@ macro_rules! preamble_maker {
         $rpm.[<$field:lower>] = Some($value);
     }};
     (@g($self:ident $rpm:ident $name:ident $value:ident $offset:ident $csm:ident) $field:ident: bool) => { ::paste::paste! {
-        $rpm.[<$field:lower>] = $value.parse().map_err(|err| syntaxerr!(~PreambleNotBool { value: $value.into(), preamble: stringify!($field), err }@$csm.current_span()))?;
+        $rpm.[<$field:lower>] = $value.parse().map_err(|err| syntaxerr!(~InvalidBool { value: $value.clone(), err }@$csm.current_span()))?;
         return Ok(());
     }};
     (@g($self:ident $rpm:ident $name:ident $value:ident $offset:ident $csm:ident) $field:ident: Strings) => { ::paste::paste! {
@@ -101,14 +102,14 @@ macro_rules! preamble_maker {
         return Ok(());
     }};
     (@g($self:ident $rpm:ident $name:ident $value:ident $offset:ident $csm:ident) Epoch: u32) => {
-        $rpm.epoch = $value.parse().map_err(|err| syntaxerr!(~InvalidPackageEpoch { epoch: $value, err }@$csm.current_span()))?;
+        $rpm.epoch = $value.parse().map_err(|err| syntaxerr!(~InvalidPackageEpoch { epoch: $value.clone(), err }@$csm.current_span()))?;
         return Ok(());
     };
     (@g($self:ident $rpm:ident $name:ident $value:ident $offset:ident $csm:ident) $field:ident: Pkgs) => { ::paste::paste! {
-        return Package::add_query(&mut $rpm.[<$field:lower>], &$value)
+        return Package::add_query($csm, &mut $rpm.[<$field:lower>], &$value)
     }};
     (@g($self:ident $rpm:ident $name:ident $value:ident $offset:ident $csm:ident) $field:ident: SimplePkgs) => { ::paste::paste! {
-        return Package::add_simple_query(&mut $rpm.[<$field:lower>], &$value)
+        return Package::add_simple_query($csm, &mut $rpm.[<$field:lower>], &$value)
     }};
     (@p($self:ident $rpm:ident $pkg:ident $name:ident $value:ident $offset:ident $csm:ident) $fieldp:ident: OptString) => { ::paste::paste! {
         if let Some(ref old) = $rpm.[<$fieldp:lower>] {
@@ -118,10 +119,10 @@ macro_rules! preamble_maker {
         return Ok(());
     }};
     (@p($self:ident $rpm:ident $pkg:ident $name:ident $value:ident $offset:ident $csm:ident) $fieldp:ident: Pkgs) => { ::paste::paste! {
-        return Package::add_query(&mut $rpm.[<$fieldp:lower>], &$value)
+        return Package::add_query($csm, &mut $rpm.[<$fieldp:lower>], &$value)
     }};
     (@p($self:ident $rpm:ident $pkg:ident $name:ident $value:ident $offset:ident $csm:ident) $fieldp:ident: SimplePkgs) => { ::paste::paste! {
-        return Package::add_simple_query(&mut $rpm.[<$fieldp:lower>], &$value)
+        return Package::add_simple_query($csm, &mut $rpm.[<$fieldp:lower>], &$value)
     }};
 }
 

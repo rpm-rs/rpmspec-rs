@@ -31,6 +31,8 @@ pub enum SpecErr {
     InvalidPackageEpoch { epoch: String, err: ParseIntError },
     #[error("Invalid package architecture: {arch}")]
     InvalidPackageArch { arch: String, offending: Option<String> },
+    #[error("Expected bool, cannot parse `{value}`: {err}")]
+    InvalidBool { value: String, err: std::str::ParseBoolError },
 
     #[error("Wrong number of arguments: expected one of {expected:?}, found {found}")]
     BadArgCount { expected: &'static [usize], found: usize },
