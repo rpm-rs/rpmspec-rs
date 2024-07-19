@@ -6,7 +6,6 @@ use itertools::Itertools;
 use lazy_format::lazy_format as lzf;
 use parking_lot::RwLock;
 use rpmspec_common::{
-    error::SpecErr,
     opt, syntaxerr,
     util::{handle_line_skip, Brace},
     PErr as Err, ParseResult,
@@ -26,6 +25,7 @@ use std::{
 use tracing::{debug, trace, warn};
 
 const PKGNAMECHARSET: &str = "_-().";
+const CDIGITS: [char; 10] = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
 #[allow(clippy::unwrap_used)]
 pub(crate) mod lazies {
     use regex::Regex;
@@ -172,7 +172,7 @@ impl Package {
     /// # Errors
     /// An error is returned if and only if there exists an invalid character that is
     /// not ascii-alphanumeric and not in [`PKGNAMECHARSET`].
-    pub fn add_simple_query<R: Read>(csm: &mut Consumer<R>, pkgs: &mut Vec<Self>, query: &str) -> ParseResult<()> {
+    pub fn add_simple_query<R: Read>(csm: &Consumer<R>, pkgs: &mut Vec<Self>, query: &str) -> ParseResult<()> {
         // TODO: this function should get a consumer!
         let mut last = String::new();
         let mut quotes = vec![];
@@ -306,7 +306,7 @@ impl Package {
         pkg.condition = PkgQCond::from_str(&caps[1])?;
         if let Some(epoch) = caps.get(2) {
             let epoch = epoch.as_str().strip_suffix(':').expect("epoch no `:` by RE_PKGQCOND");
-            pkg.epoch = Some(epoch.parse().map_err(|err| Err::InvalidSyntax { span: todo!(), err: SpecErr::InvalidPackageEpoch { epoch: epoch.into(), err }, notes: vec![] })?);
+            pkg.epoch = Some(epoch.parse().map_err(|err| syntaxerr!(~InvalidPackageEpoch { epoch: epoch.into(), err }@csm.current_span()))?);
         }
         pkg.version = Some(caps[3].into());
         if let Some(rel) = caps.get(5) {
@@ -664,17 +664,17 @@ pub struct RPMFiles {
 
 impl RPMFiles {
     /// Parses a `%files` section using `self.raw`.
-    fn parse(&mut self) -> ParseResult<()> {
+    fn parse<R: Read>(&mut self, csm: &Consumer<R>) -> ParseResult<()> {
         //? http://ftp.rpm.org/max-rpm/s1-rpm-inside-files-list-directives.html
         // TODO: this function should get a consumer!
         let mut defattr = (0, "".into(), "".into(), 0);
-        self.files = RE_FILE.captures_iter(&self.raw).filter_map(|cap| Self::_parse_map(&cap, &mut defattr).transpose()).filter_ok(|x| x.path.is_empty()).try_collect()?;
+        self.files = RE_FILE.captures_iter(&self.raw).filter_map(|cap| Self::_parse_map(csm, &cap, &mut defattr).transpose()).filter_ok(|x| x.path.is_empty()).try_collect()?;
         Ok(())
     }
 
-    fn _parse_map(cap: &regex::Captures, defattr: &mut (u16, String, String, u16)) -> Result<Option<RPMFile>, Err> {
+    fn _parse_map<R: Read>(csm: &Consumer<R>, cap: &regex::Captures, defattr: &mut (u16, String, String, u16)) -> Result<Option<RPMFile>, Err> {
         if let Some(remain) = &cap[0].strip_prefix("%defattr(") {
-            Self::_parse_map_defattr(remain, defattr)?;
+            Self::_parse_map_defattr(csm, remain, defattr)?;
             return Ok(None);
         }
         let mut f = RPMFile::default();
@@ -686,15 +686,11 @@ impl RPMFiles {
                 if name.starts_with("%attr(") {
                     let ss: Vec<&str> = x.split(',').map(str::trim).collect();
                     let Some([fmode, user, group]) = ss.get(0..=2) else {
-                        return Err(Err::InvalidSyntax { span: todo!(), err: SpecErr::BadArgCount { expected: &[3], found: ss.len() }, notes: vec![(todo!(), Box::new("While parsing %attr(...)"))] });
+                        syntaxerr!(BadArgCount { expected: &[3], found: ss.len() }@csm.current_span() => ["While parsing %attr(...)"]);
                     };
                     let (fmode, user, group) = (*fmode, *user, *group);
                     if fmode != "-" {
-                        f.mode = fmode.parse().map_err(|err| Err::InvalidSyntax {
-                            span: todo!(),
-                            err: SpecErr::BadMode { mode: fmode.into(), err },
-                            notes: vec![(todo!(), Box::new("While parsing %defattr")), (todo!(), Box::new("While parsing file mode"))],
-                        })?;
+                        f.mode = fmode.parse().map_err(|err| syntaxerr!(~BadMode { mode: fmode.into(), err }@csm.current_span() => ["While parsing %attr", "While parsing file mode"]))?;
                     }
                     if user != "-" {
                         f.user = user.into();
@@ -709,7 +705,7 @@ impl RPMFiles {
                     let mut vs = x.split(' ').map_into().collect_vec();
                     if let Some(VerifyFileMod::None(modifier)) = vs.iter().find(|s| matches!(s, VerifyFileMod::None(_))) {
                         let modifier = modifier.to_owned();
-                        syntaxerr!(BadModifier { modifier, id: "%verify" }@todo!());
+                        syntaxerr!(BadModifier { modifier, id: "%verify" }@csm.current_span());
                     }
                     if vs.contains(&VerifyFileMod::Not) {
                         let mut ll = VerifyFileMod::all();
@@ -726,12 +722,12 @@ impl RPMFiles {
                     f.attr = RPMFileAttr::Config(match x {
                         "missingok" => ConfigFileMod::MissingOK,
                         "noreplace" => ConfigFileMod::NoReplace,
-                        _ => syntaxerr!(BadModifier { modifier: x.into(), id: "%config" }@todo!()),
+                        _ => syntaxerr!(BadModifier { modifier: x.into(), id: "%config" }@csm.current_span()),
                     });
                     f.path = cap.get(3).expect("No RE grp 3 in %files?").as_str().into();
                     (f.mode, f.user, f.group, f.dmode) = defattr.clone();
                 }
-                syntaxerr!(UnknownFilesDirective(name.into())@todo!());
+                syntaxerr!(UnknownFilesDirective(name.into())@csm.current_span());
             }
             f.attr = match name {
                 "%artifact " => RPMFileAttr::Artifact,
@@ -741,43 +737,31 @@ impl RPMFiles {
                 "%doc " | "%readme " => RPMFileAttr::Doc,
                 "%license " => RPMFileAttr::License,
                 "%docdir " => RPMFileAttr::Docdir,
-                _ => syntaxerr!(UnknownFilesDirective(name.into())@todo!()),
+                _ => syntaxerr!(UnknownFilesDirective(name.into())@csm.current_span()),
             }
         }
         f.path = cap.get(3).expect("No RE grp 3 in %files?").as_str().into();
         Ok(Some(f))
     }
 
-    fn _parse_map_defattr(remain: &&str, defattr: &mut (u16, String, String, u16)) -> Result<(), Err> {
+    fn _parse_map_defattr<R: Read>(csm: &Consumer<R>, remain: &&str, defattr: &mut (u16, String, String, u16)) -> Result<(), Err> {
         let Some(remain) = remain.trim_end().strip_suffix(')') else {
-            return Err(Err::InvalidSyntax { span: todo!(), err: SpecErr::UnclosedBraces { quotes: vec![Brace::Round] }, notes: vec![(todo!(), Box::new("While parsing %defattr(..."))] });
+            syntaxerr!(UnclosedBraces { quotes: vec![Brace::Round] }@csm.current_span() => ["While parsing %defattr(..."]);
         };
         let ss: Box<[&str]> = remain.split(',').map(str::trim).collect();
         let [filemode, user, group, dirmode] = match *ss {
             [filemode, user, group] => [filemode, user, group, ""],
             [filemode, user, group, dmode] => [filemode, user, group, dmode],
-            _ => return Err(Err::InvalidSyntax { span: todo!(), err: SpecErr::BadArgCount { expected: &[3, 4], found: ss.len() }, notes: vec![] }),
+            _ => syntaxerr!(BadArgCount { expected: &[3, 4], found: ss.len() }@csm.current_span()),
         };
         *defattr = (
-            if filemode == "-" {
-                0
-            } else {
-                filemode.parse().map_err(|err| Err::InvalidSyntax {
-                    span: todo!(),
-                    err: SpecErr::BadMode { mode: filemode.into(), err },
-                    notes: vec![(todo!(), Box::new("While parsing %defattr")), (todo!(), Box::new("While parsing file mode"))],
-                })?
-            },
+            if filemode == "-" { 0 } else { filemode.parse().map_err(|err| syntaxerr!(~BadMode { mode: filemode.into(), err }@csm.current_span()))? },
             (if user == "-" { "" } else { user }).into(),
             (if group == "-" { "" } else { group }).into(),
             if dirmode == "-" {
                 0
             } else {
-                dirmode.parse().map_err(|err| Err::InvalidSyntax {
-                    span: todo!(),
-                    err: SpecErr::BadMode { mode: dirmode.into(), err },
-                    notes: vec![(todo!(), Box::new("While parsing %defattr")), (todo!(), Box::new("While parsing dir mode"))],
-                })?
+                dirmode.parse().map_err(|err| syntaxerr!(~BadMode { mode: dirmode.into(), err }@csm.current_span() => ["While parsing %defattr", "While parsing dir mode"]))?
             },
         );
         Ok(())
@@ -902,19 +886,19 @@ impl Changelogs {
     ///
     /// # Errors
     /// - [`chrono::ParseError`] if any dates cannot be parsed.
-    pub fn parse(&mut self) -> ParseResult<()> {
+    pub fn parse<R: Read>(&mut self, csm: &Consumer<R>) -> ParseResult<()> {
         self.changelogs = RE_CLOG
             .captures_iter(&self.raw)
             .map(|cap| {
-                Ok(Changelog {
-                    date: chrono::NaiveDate::parse_from_str(&cap[1], "%a %b %d %Y").map_err(|e| syntaxerr!(~InvalidChangelogDate(e)@todo!()))?,
+                ParseResult::Ok(Changelog {
+                    date: chrono::NaiveDate::parse_from_str(&cap[1], "%a %b %d %Y").map_err(|e| syntaxerr!(~InvalidChangelogDate(e)@csm.current_span()))?,
                     version: cap.get(10).map(|v| v.as_str().into()),
                     maintainer: cap[6].into(),
                     email: cap.get(8).map(|email| email.as_str().into()),
                     message: cap[11].trim().into(),
                 })
             })
-            .collect::<ParseResult<Box<[Changelog]>>>()?;
+            .try_collect()?;
         Ok(())
     }
 }
@@ -1476,7 +1460,7 @@ impl SpecParser {
     ///
     /// # Errors
     /// Fails if there are parsing failures / macro evaluation failures
-    pub fn _handle_conditions(&mut self, start: &str, remain: &str, csm: &mut Consumer<impl Read>) -> ParseResult<bool> {
+    pub fn _handle_conditions(&mut self, start: &str, remain: &str, csm: &Consumer<impl Read>) -> ParseResult<bool> {
         // TODO: parse using RPM expressions
         match start {
             "if" => {
@@ -1605,7 +1589,7 @@ impl SpecParser {
             "prep" => RPMSection::Prep,
             "build" => RPMSection::Build,
             "install" => RPMSection::Install,
-            "files" => self._hdl_section_files(&remain, &consumer.range(remainpos..consumer.end).unwrap())?,
+            "files" => self._hdl_section_files(&remain, &consumer.range(remainpos..consumer.end).expect("Cannot unwind Consumer"))?,
             "changelog" => RPMSection::Changelog,
             _ => return Ok(false),
         };
@@ -1640,7 +1624,7 @@ impl SpecParser {
                             syntaxerr!(NoArgWithFlag { flag: "n", call: "files" }@csm.current_span());
                         }
                         if !name.is_empty() {
-                            syntaxerr!(DupFlagsToStaticCall { flag: "n", call: "files", prev: name.into(), found: next.into() }@csm.current_span());
+                            syntaxerr!(DupFlagsToStaticCall { flag: "n", call: "files", prev: name, found: next.into() }@csm.current_span());
                         }
                         name = next.into();
                     },
@@ -1723,7 +1707,7 @@ impl SpecParser {
                         self.errors.push(syntaxerr!(~InvalidLineExpectedPreamble(line.into())@consumer.span(older_pos..old_pos)));
                         continue;
                     };
-                    if let Some(digitpos) = cap[1].find(['1', '2', '3', '4', '5', '6', '7', '8', '9', '0']) {
+                    if let Some(digitpos) = cap[1].find(CDIGITS) {
                         let digit = cap[1][digitpos..].parse().expect("Cannot parse digits after preamble name");
                         self.add_list_preamble(&cap[1][..digitpos], digit, &cap[2])?;
                     } else if ["Source", "Patch"].contains(&&cap[1]) {
@@ -1789,8 +1773,9 @@ impl SpecParser {
         // it's just markdown… and it doesn't really have to be markdown…
 
         // self.rpm.changelog.parse()?;
-        self.rpm.files.parse()?;
-        self.rpm.packages.values_mut().try_for_each(|p| p.files.parse())?;
+        // FIXME: proper range for `consumer`
+        self.rpm.files.parse(&consumer)?;
+        self.rpm.packages.values_mut().try_for_each(|p| p.files.parse(&consumer))?;
         Ok(())
     }
 
